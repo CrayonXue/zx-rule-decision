@@ -1,0 +1,2 @@
+# Exclude training runs (TensorBoard logs, checkpoints, etc.)
+runs/

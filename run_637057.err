@@ -1,0 +1,30 @@
+Miniforge3-24.11 loaded successful
+cuda-12.4 loaded successful
+cudnn-8.9.6.50_CUDA 12.x loaded successful
+/data/home/sczc457/.conda/envs/rule_env/lib/python3.11/site-packages/torch/cuda/__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+[rank: 0] Seed set to 42
+Using 16bit Automatic Mixed Precision (AMP)
+GPU available: True (cuda), used: True
+TPU available: False, using: 0 TPU cores
+HPU available: False, using: 0 HPUs
+`Trainer(limit_train_batches=1.0)` was configured so 100% of the batches per epoch will be used..
+/data/home/sczc457/.conda/envs/rule_env/lib/python3.11/site-packages/swanlab/integration/pytorch_lightning.py:107: There is a swanlab experiment already in progress and newly created instances of `SwanLabLogger` will reuse this experiment. If this is not desired, call `swanlab.finish()` before instantiating `SwanLabLogger`.
+LOCAL_RANK: 0 - CUDA_VISIBLE_DEVICES: [0]
+/data/home/sczc457/.conda/envs/rule_env/lib/python3.11/site-packages/pytorch_lightning/utilities/model_summary/model_summary.py:231: Precision 16-mixed is not supported by the model summary.  Estimated model size in MB will not be accurate. Using 32 bits instead.
+
+  | Name     | Type        | Params | Mode 
+-------------------------------------------------
+0 | node_enc | NodeEncoder | 18.9 K | train
+1 | edge_enc | EdgeEncoder | 49.5 K | train
+2 | policy   | PolicyNet   | 101 K  | train
+3 | value    | ValueNet    | 66.8 K | train
+-------------------------------------------------
+236 K     Trainable params
+0         Non-trainable params
+236 K     Total params
+0.946     Total estimated model params size (MB)
+30        Modules in train mode
+0         Modules in eval mode
+SLURM auto-requeueing enabled. Setting signal handlers.
+`Trainer.fit` stopped: `max_steps=100000` reached.
