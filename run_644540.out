@@ -1,0 +1,13 @@
+swanlab: Tracking run with swanlab version 0.6.10
+swanlab: Run data will be saved locally in 
+/data/run01/sczc457/rule-decision/runs/ZX-PPO_nq[2-3]_gates[3-6]_N128_E256_envs1
+6_rs2048_mb512_pe4_lr0.0003_20250922-161905/swanlab/run-20250922_161914-rk5vm3o0
+vj6elq0fjcj55
+swanlab: 👋 Hi Siuet,welcome to swanlab!
+swanlab: Syncing run 
+ZX-PPO_nq[2-3]_gates[3-6]_N128_E256_envs16_rs2048_mb512_pe4_lr0.0003_20250922-16
+1905 to the cloud
+swanlab: 🏠 View project at https://swanlab.cn/@Siuet/ZX-rule
+swanlab: 🚀 View run at 
+https://swanlab.cn/@Siuet/ZX-rule/runs/rk5vm3o0vj6elq0fjcj55
+Training: |          | 0/? [00:00<?, ?it/s]Training: |          | 0/? [00:00<?, ?it/s]Epoch 0:   0%|          | 0/100 [00:00<?, ?it/s]Epoch 0:   1%|          | 1/100 [13:51<22:52:28,  0.00it/s]Epoch 0:   1%|          | 1/100 [13:51<22:52:33,  0.00it/s, v_num=cj55, loss/policy=-.00909, loss/value=0.0181, loss/entropy=5.600, stats/return_mean=-.688]Epoch 0:   2%|▏         | 2/100 [24:35<20:04:48,  0.00it/s, v_num=cj55, loss/policy=-.00909, loss/value=0.0181, loss/entropy=5.600, stats/return_mean=-.688]Epoch 0:   2%|▏         | 2/100 [24:35<20:05:01,  0.00it/s, v_num=cj55, loss/policy=0.0149, loss/value=0.0223, loss/entropy=5.360, stats/return_mean=-.547] Epoch 0:   3%|▎         | 3/100 [33:07<17:51:06,  0.00it/s, v_num=cj55, loss/policy=0.0149, loss/value=0.0223, loss/entropy=5.360, stats/return_mean=-.547]Epoch 0:   3%|▎         | 3/100 [33:07<17:51:08,  0.00it/s, v_num=cj55, loss/policy=0.0212, loss/value=0.0193, loss/entropy=5.100, stats/return_mean=-.410]Epoch 0:   4%|▍         | 4/100 [39:36<15:50:25,  0.00it/s, v_num=cj55, loss/policy=0.0212, loss/value=0.0193, loss/entropy=5.100, stats/return_mean=-.410]Epoch 0:   4%|▍         | 4/100 [39:36<15:50:26,  0.00it/s, v_num=cj55, loss/policy=-.0352, loss/value=0.0111, loss/entropy=4.610, stats/return_mean=-.236]Epoch 0:   5%|▌         | 5/100 [43:46<13:51:35,  0.00it/s, v_num=cj55, loss/policy=-.0352, loss/value=0.0111, loss/entropy=4.610, stats/return_mean=-.236]Epoch 0:   5%|▌         | 5/100 [43:46<13:51:36,  0.00it/s, v_num=cj55, loss/policy=0.0446, loss/value=0.00169, loss/entropy=3.370, stats/return_mean=-.0373]

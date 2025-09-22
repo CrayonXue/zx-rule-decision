@@ -5,9 +5,7 @@ import torch.nn.functional as F
 import pytorch_lightning as pl
 from torch.distributions.categorical import Categorical
 import numpy as np
-from .own_constants import (INPUT, OUTPUT, GREEN, RED, HADAMARD, 
-                      ZERO, PI_half, PI, PI_three_half, ARBITRARY, NO_ANGLE,
-                      ANGLE_LIST, N_NODE_ACTIONS, N_EDGE_ACTIONS, encode_phase)
+from .own_constants import ( N_NODE_ACTIONS, N_EDGE_ACTIONS)
 
 def masked_categorical(logits, mask, eps=1e-8):
     # mask: 0/1 shape [B, A]

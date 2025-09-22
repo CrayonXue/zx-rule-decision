@@ -48,7 +48,7 @@ class ZXGymWrapper:
         return out
 
     def _build_obs_and_mask(self, observation):
-        node_ids, node_type, node_phase, qubit_on, node_sel, edge_pairs, edge_sel, n_nodes, n_edges, context = observation
+        node_ids, node_type, node_phase, qubit_on, node_sel, edge_pairs, edge_sel, n_nodes, n_edges, mask, context = observation
 
         n = len(node_ids)
         e = len(edge_pairs)
@@ -76,21 +76,11 @@ class ZXGymWrapper:
             "context": context.astype(np.float32),
         }
 
-        # Action mask: valid node actions for first n nodes, valid edge actions for first e edges, STOP always valid
-        mask = np.zeros(self.action_size, dtype=np.int8)
-        # Node actions
-        for i in range(n):
-            base = i * self.n_node_actions
-            mask[base:base+self.n_node_actions] = 1
-        # Shift by node section
-        edge_offset = self.max_nodes * self.n_node_actions
-        for j in range(e):
-            base = edge_offset + j * self.n_edge_actions
-            mask[base:base+self.n_edge_actions] = 1
-        # STOP
-        mask[-1] = 1
+        node_mask = self._pad(mask[:n*N_NODE_ACTIONS].reshape(-1,1), (self.max_nodes*self.n_node_actions, 1), 0)
+        edge_mask = self._pad(mask[n*N_NODE_ACTIONS:(n*N_NODE_ACTIONS + e*N_EDGE_ACTIONS)].reshape(-1,1), (self.max_edges*self.n_edge_actions, 1), 0)
+        action_mask = np.concatenate([node_mask, edge_mask, mask[-1].reshape(1,1)]).reshape(-1)
 
-        obs["action_mask"] = mask
+        obs["action_mask"] = action_mask
         return obs
 
     def reset(self, seed=None):
