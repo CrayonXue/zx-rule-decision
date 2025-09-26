@@ -34,22 +34,20 @@ max_gates=6
 p_t=0.2
 p_h=0.2
 
-max_epochs=1000
-steps_per_epoch=100
-max_steps=10000
-num_envs=16
-max_nodes=128
-max_edges=256
-env_max_steps=300
-step_penalty=0
+max_epochs=10000
+ppo_updates_per_epoch=1
+max_train_steps=10000
+num_envs=8
+env_max_steps=100
+logger_type='swanlab'
 if [ "$TRAIN" = "True" ]; then
-    python train.py \
+    python run_train.py \
     --max_epochs $max_epochs \
-    --steps_per_epoch $steps_per_epoch \
-    --max_steps $max_steps \
+    --ppo_updates_per_epoch $ppo_updates_per_epoch \
+    --max_train_steps $max_train_steps \
     --num_envs $num_envs \
+    --logger_type $logger_type \
     --env_max_steps $env_max_steps \
-    --step_penalty $step_penalty \
     --num_qubits_min $num_qubits_min \
     --num_qubits_max $num_qubits_max \
     --min_gates $min_gates \

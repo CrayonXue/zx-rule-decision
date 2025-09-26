@@ -20,95 +20,69 @@ class ZXCalculus():
     """Class for single ZX-calculus environment"""
     def __init__(self,
                  max_steps:int=1000, 
-                 add_reward_per_step:float=-0.05,
                  resetter=None,
                  count_down_from:int=20,
-                 dont_allow_stop:bool=False,
                  extra_state_info:bool=False,
                  adapted_reward:bool=False):
         """max_steps: maximum number of steps per trajectory,
-        add_reward_per_step: reward added per step,
         resetter: object that can reset the environment,
         count_down_from: start stop counter from this number,
-        dont_allow_stop: if True, stop action is only allowed if no other action is available,
         """
         
-        self.add_reward_per_step = add_reward_per_step
         self.max_steps = max_steps        
         self.resetter = resetter
         self.count_down_from = count_down_from
-        self.dont_allow_stop = dont_allow_stop
         self.extra_state_info = extra_state_info
         self.adapted_reward = adapted_reward
 
  
 
     def get_observation(self)-> tuple:
-        """ observation: (type_array, phase_array, qubit_on_array,selected_node, edge_array, selected_edges)
-        Get observation from the environment's graph"""
-
-        type_list = []
-        phase_list = []
-        qubit_on_list = [] # qubit index of each node applied to
+        """ observation
+        Get data,mask from the environment's graph"""
+        self.id2pos = {int(v_id): i for i, v_id in enumerate(self.graph.vertices())}
+        nodes_features = []
         for v in self.graph.vertices():
-            qubit_on_list.append(self.graph.qubit(v))
             if v in self.graph.inputs():
-                type_list.append(INPUT)
-                phase_list.append(encode_phase(None))
+                node_type = INPUT
+                node_phase = encode_phase(None)
             elif v in self.graph.outputs():
-                type_list.append(OUTPUT)
-                phase_list.append(encode_phase(None))
+                node_type = OUTPUT
+                node_phase = encode_phase(None)
             elif self.graph.type(v) == VertexType.Z:
-                type_list.append(GREEN)
-                phase_list.append(encode_phase(self.graph.phase(v)))
+                node_type = GREEN
+                node_phase = encode_phase(self.graph.phase(v))
             elif self.graph.type(v) == VertexType.X:
-                type_list.append(RED)
-                phase_list.append(encode_phase(self.graph.phase(v)))
+                node_type = RED
+                node_phase = encode_phase(self.graph.phase(v))
             elif self.graph.type(v) == VertexType.H_BOX:
-                type_list.append(HADAMARD)
-                phase_list.append(encode_phase(None))
+                node_type = HADAMARD
+                node_phase = encode_phase(None)
+            
+            select = self.selected_node[self.id2pos[int(v)]]
+            node_feasture = node_type + node_phase + [self.graph.qubit(v)] + [select] #5+10+1+1
+            nodes_features.append(node_feasture)
+        x = torch.tensor(nodes_features, dtype=torch.float32)
 
-        self.node_array = np.array(list(self.graph.vertices()), dtype=np.int32)
-        self.type_array = np.array(type_list, dtype=np.int32)
-        self.phase_array = np.array(phase_list, dtype=np.int32)
-        self.qubit_on_array = np.array(qubit_on_list, dtype=np.float32)
-        self.edge_array = np.array(list(self.graph.edges()), dtype=np.int32)
-        self.id2pos = {int(v_id): i for i, v_id in enumerate(self.node_array)}
+        edge_list = list(self.graph.edges())
 
-        minigame = np.sum(self.selected_node)
-        # Count down at end of trajectory only
-        if self.max_steps - self.step_counter < self.count_down_from:
-            count_down = self.max_steps - self.step_counter
+        if not edge_list:
+            edge_index = torch.empty((2, 0), dtype=torch.long)
         else:
-            count_down = self.count_down_from
+            uv = [(self.id2pos[int(u)], self.id2pos[int(v)]) for u, v in edge_list]
+            edge_index = torch.tensor(uv, dtype=torch.long).t().contiguous()
 
-        if self.extra_state_info:
-            info_state = self.max_diff
-        else:
-            info_state = 0.
-        
-        context_features = np.array([count_down, info_state, minigame], dtype=np.float32)
-        # context_features = np.append(context_features, rel_action_counts)
+        # Precompute feasibility mask (variable length: N*node_act + E*edge_act + 1)
+        mask = torch.from_numpy(self.get_action_mask().astype(np.int8))  # [A_var]
+        data = Data(
+            x=x, 
+            edge_index=edge_index)
+        return data, mask
 
-        self.mask = self.get_action_mask()
-        observation = [self.node_array,
-                       self.type_array, 
-                       self.phase_array,
-                       self.qubit_on_array,
-                       self.selected_node,
-                       self.edge_array,
-                       self.selected_edges,
-                       self.n_spiders, 
-                       self.n_edges,
-                       self.mask,
-                       context_features]
-
-        return observation
 
     def reset(self)-> tuple:
         '''
-        returns: (observation), 
-        where observation is (type_array, phase_array, qubit_on_array,selected_node, edge_array, selected_edges)
+        returns: (data,mask)
         Resets the environment:
         1. Sample ZX_diagram.
         2. Set the step counter to zero.
@@ -116,10 +90,8 @@ class ZXCalculus():
         '''
         self.graph, self.initial_circuit = self.resetter.reset()
 
-        self.selected_edges = np.zeros(self.n_edges, dtype=np.int32)
         self.selected_node = np.zeros(self.n_spiders, dtype=np.int32)
         self.step_counter = 0
-        self.max_diff = 0
 
         # For keep track of previous spiders for reward function
         self.previous_left_nodes_by_continuous, self.previous_left_nodes_by_continuous_and_broken = self.num_nodes_left
@@ -132,32 +104,24 @@ class ZXCalculus():
 
     def step(self, action: int) -> tuple[int, int]:
         '''action: int, action to be applied to the environment,
-        returns: (observation, reward, done)
+        returns: (data,mask, reward, done)
         '''
 
         ## Add the step counter for stopping criteria
         self.step_counter += 1
         self.graph = self.graph.copy()
         # Check if trajectory is over
-        if (self.step_counter >= self.max_steps or
-            (action == N_EDGE_ACTIONS * self.n_edges + N_NODE_ACTIONS * self.n_spiders and not self.dont_allow_stop)
-            ): 
+        if self.step_counter >= self.max_steps: 
             # Return observation and reward, end_episode
-            observation = self.reset()
-            return observation, 0, 1
-        elif action == N_EDGE_ACTIONS * self.n_edges + N_NODE_ACTIONS * self.n_spiders and self.dont_allow_stop:
-            observation = self.get_observation()
-            return observation, 0, 0
+            data,mask = self.reset()
+            return data,mask, 0, 1
         else:
             # Applies the action    
-            success = self.apply_action(action)
-            if len(self.selected_edges) != self.n_edges:
-                self.selected_edges = np.zeros(self.n_edges, dtype=np.int32)
+            self.apply_action(action)
             if len(self.selected_node) != self.n_spiders:
                 self.selected_node = np.zeros(self.n_spiders, dtype=np.int32)
-            observation = self.get_observation()
+            data,mask = self.get_observation()
 
-    
             ## Calculate the reward
             self.previous_left_nodes_by_continuous, self.previous_left_nodes_by_continuous_and_broken = self.current_left_nodes_by_continuous, self.current_left_nodes_by_continuous_and_broken
             self.current_left_nodes_by_continuous, self.current_left_nodes_by_continuous_and_broken = self.num_nodes_left
@@ -165,25 +129,19 @@ class ZXCalculus():
             self.previous_high_degree_nodes = self.current_high_degree_nodes
             self.current_high_degree_nodes = self.count_high_degree_nodes()
 
+            if self.current_left_nodes_by_continuous == 0 and self.current_high_degree_nodes == 0:
+                done = 1
+            else:
+                done = 0
             # reward = delta_left_continuous + 0.2*delta_left_cont_and_broken + self.delta_high_degree_nodes()
-            reward = -self.current_left_nodes_by_continuous - 0.2*self.current_left_nodes_by_continuous_and_broken - self.current_high_degree_nodes
-
-            if reward + self.max_diff >= 0:
-                reward_tilde = reward + self.max_diff
-                self.max_diff = 0
-            else:
-                reward_tilde = 0
-                self.max_diff = reward + self.max_diff
-
-            # return observation, reward, done
-            if self.adapted_reward:
-                # rew_returned = reward_tilde + self.add_reward_per_step + success*0.1
-                rew_returned = reward_tilde + self.add_reward_per_step
-            else:
-                # rew_returned = reward + self.add_reward_per_step + success*0.1
-                rew_returned = reward + self.add_reward_per_step
-
-            return observation, rew_returned, 0
+            # reward = -self.current_left_nodes_by_continuous - 0.2*self.current_left_nodes_by_continuous_and_broken - self.current_high_degree_nodes
+            reward =(
+                0.45*(self.n_spiders-self.current_left_nodes_by_continuous)/self.n_spiders 
+                +0.1*(self.n_spiders-self.current_left_nodes_by_continuous_and_broken)/self.n_spiders 
+                +0.45*(self.n_spiders-self.current_high_degree_nodes)/self.n_spiders
+            )
+            
+            return data,mask, reward, done
     
 
     # =================Reward calculation=========================
@@ -238,7 +196,12 @@ class ZXCalculus():
     def apply_action(self, action:int):
         self.graph = self.graph.copy()
         self.node_actions_fn = [self.select_node, self.unfuse_rule, self.color_change_rule, self.split_hadamard, self.pi_rule]
-        self.edge_actions_fn = [self.select_edge, self.fuse_rule, self.bialgebra_rule]
+        self.edge_actions_fn = [self.fuse_rule, self.bialgebra_rule]
+        if len(self.node_actions_fn) != N_NODE_ACTIONS:
+            raise ValueError(f"Number of node actions {len(self.node_actions_fn)} does not match N_NODE_ACTIONS {N_NODE_ACTIONS}")
+        if len(self.edge_actions_fn) != N_EDGE_ACTIONS:
+            raise ValueError(f"Number of edge actions {len(self.edge_actions_fn)} does not match N_EDGE_ACTIONS {N_EDGE_ACTIONS}")
+
         if action < N_NODE_ACTIONS * self.n_spiders:
             # Action is node action
             node_idx = action//N_NODE_ACTIONS
@@ -345,11 +308,6 @@ class ZXCalculus():
             return False
 
     # ----------------edge action-----------------------
-    def select_edge(self, edge_idx):
-        """mark edge action after start Unfuse"""
-        self.selected_edges[edge_idx] = 1-self.selected_edges[edge_idx]
-        return True
-
     def fuse_rule(self, edge_idx):
         """Fuse action"""
         s,t = list(self.graph.edges())[edge_idx]
@@ -414,7 +372,7 @@ class ZXCalculus():
     def get_action_mask(self) -> np.ndarray:
         cut1 = N_NODE_ACTIONS*self.n_spiders  
         cut2 = cut1 + N_EDGE_ACTIONS*self.n_edges
-        mask = np.zeros(cut2+1, dtype=np.int32)
+        mask = np.zeros(cut2, dtype=np.int32)
         for i in range(cut1):
             node_idx = i // N_NODE_ACTIONS
             action_idx = i % N_NODE_ACTIONS
@@ -437,12 +395,11 @@ class ZXCalculus():
             edge_idx = (i - cut1) // N_EDGE_ACTIONS
             action_idx = (i - cut1) % N_EDGE_ACTIONS
             s,t = list(self.graph.edges())[edge_idx]
-            if action_idx == 0: # select_edge
-                mask[i] = 1
-            elif action_idx == 1: # fuse_rule
+
+            if action_idx == 0: # fuse_rule
                 if self.graph.type(s) == self.graph.type(t) and (self.graph.type(s) == VertexType.Z or self.graph.type(s) == VertexType.X):
                     mask[i] = 1
-            elif action_idx == 2: # bialgebra_rule
+            elif action_idx == 1: # bialgebra_rule
                 v0t = self.graph.type(s)
                 v1t = self.graph.type(t)
                 v0p = self.graph.phase(s)
@@ -456,17 +413,11 @@ class ZXCalculus():
                         self.graph.num_edges(s, s) == 0 and # there are no self-loops on s
                         self.graph.num_edges(t, t) == 0): # there are no self-loops on t
                         mask[i] = 1
-        # STOP action
-        if self.dont_allow_stop:
-            if np.sum(mask[:-1]) == 0:
-                mask[-1] = 1
-        else:
-            mask[-1] = 1
         return mask
 
 
 def save(colors:np.ndarray, angles:np.ndarray, selected_node:np.ndarray, 
-         source:np.ndarray, target:np.ndarray, selected_edges:np.ndarray, idx:int):
+         source:np.ndarray, target:np.ndarray, idx:int):
     """saves the current state of the environment at step idx"""
     with open(f"colors{idx}.pkl", 'wb') as f:
         pickle.dump(colors, f)
@@ -478,8 +429,7 @@ def save(colors:np.ndarray, angles:np.ndarray, selected_node:np.ndarray,
         pickle.dump(target, f)
     with open(f"selected_node{idx}.pkl", 'wb') as f:
         pickle.dump(selected_node, f)
-    with open(f"selected_edges{idx}.pkl", 'wb') as f:
-        pickle.dump(selected_edges, f)
+
 
 
 # The following functions are stand-alone functions to potentially make them jit compatible in the future
@@ -489,6 +439,9 @@ def save(colors:np.ndarray, angles:np.ndarray, selected_node:np.ndarray,
 from collections import Counter
 from typing import List
 import numpy as np
+import torch 
+from torch_geometric.data import Data
+
 def determine_qubit(neighbor_qubit:List[int]) -> int:
     """Determine the qubit for the new child node based on its neighbors' qubits.
     
@@ -508,3 +461,51 @@ def determine_row(neighbor_row:List[int]) -> int:
     """
     return max(neighbor_row)
 
+def pyzx_to_pyg(zx_graph, num_qubits: int):
+    """
+    Encode qubit number index in the node feature for boundary vertex
+    """
+    node_features = []
+    vertices = sorted(list(zx_graph.vertices()))
+    
+    inputs = zx_graph.inputs()
+    outputs = zx_graph.outputs()
+    
+    # Acquiring qubit index for each boundary vertex
+    # from PyZX
+    input_q_map = {v: zx_graph.qubit(v) for v in inputs}
+    output_q_map = {v: zx_graph.qubit(v) for v in outputs}
+    
+    boundary_feature_dim = 2 * num_qubits + 1
+    
+    for v in vertices:
+        # Spider type (Z/X) - [2]
+        stype = zx_graph.type(v)
+        type_encoding = [1.0, 0.0] if stype == VertexType.Z else [0.0, 1.0]
+
+        # Boundary and position encoding - [2 * N_qubits + 1]
+        boundary_encoding = [0.0] * boundary_feature_dim
+        if v in inputs:
+            q_idx = input_q_map[v]
+            boundary_encoding[q_idx] = 1.0
+        elif v in outputs:
+            q_idx = output_q_map[v]
+            boundary_encoding[num_qubits + q_idx] = 1.0
+        else: # Internal node
+            boundary_encoding[-1] = 1.0
+
+        # Phase encoding (sin/cos) - [2]
+        phase = float(zx_graph.phase(v)) * np.pi
+        phase_encoding = [np.sin(phase), np.cos(phase)]
+        
+        node_features.append(type_encoding + boundary_encoding + phase_encoding)
+
+    x = torch.tensor(node_features, dtype=torch.float)
+
+    edge_list = list(zx_graph.edges())
+    if not edge_list:
+        edge_index = torch.empty((2, 0), dtype=torch.long)
+    else:
+        edge_index = torch.tensor(edge_list, dtype=torch.long).t().contiguous()
+
+    return Data(x=x, edge_index=edge_index)

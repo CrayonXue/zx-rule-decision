@@ -1,0 +1,74 @@
+Miniforge3-24.11 loaded successful
+cuda-12.4 loaded successful
+cudnn-8.9.6.50_CUDA 12.x loaded successful
+/data/home/sczc457/.conda/envs/rule_env/lib/python3.11/site-packages/torch/cuda/__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+[rank: 0] Seed set to 42
+Using 16bit Automatic Mixed Precision (AMP)
+GPU available: True (cuda), used: True
+TPU available: False, using: 0 TPU cores
+HPU available: False, using: 0 HPUs
+`Trainer(limit_train_batches=1.0)` was configured so 100% of the batches per epoch will be used..
+2025-09-25 22:28:24.362816: I tensorflow/tsl/cuda/cudart_stub.cc:28] Could not find cuda drivers on your machine, GPU will not be used.
+2025-09-25 22:28:25.468127: I tensorflow/core/platform/cpu_feature_guard.cc:182] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+2025-09-25 22:28:54.991829: W tensorflow/compiler/tf2tensorrt/utils/py_utils.cc:38] TF-TRT Warning: Could not find TensorRT
+LOCAL_RANK: 0 - CUDA_VISIBLE_DEVICES: [0]
+/data/home/sczc457/.conda/envs/rule_env/lib/python3.11/site-packages/pytorch_lightning/utilities/model_summary/model_summary.py:231: Precision 16-mixed is not supported by the model summary.  Estimated model size in MB will not be accurate. Using 32 bits instead.
+
+  | Name | Type           | Params | Mode 
+------------------------------------------------
+0 | net  | PolicyValueNet | 268 K  | train
+------------------------------------------------
+268 K     Trainable params
+0         Non-trainable params
+268 K     Total params
+1.075     Total estimated model params size (MB)
+26        Modules in train mode
+0         Modules in eval mode
+SLURM auto-requeueing enabled. Setting signal handlers.
+/data/home/sczc457/.conda/envs/rule_env/lib/python3.11/site-packages/pytorch_lightning/trainer/connectors/logger_connector/result.py:213: You called `self.log('counters/total_env_steps', ...)` in your `training_step` but the value needs to be floating to be reduced. Converting it to torch.float32. You can silence this warning by converting the value to floating point yourself. If you don't intend to reduce the value (for instance when logging the global step or epoch) then you can use `self.logger.log_metrics({'counters/total_env_steps': ...})` instead.
+/data/home/sczc457/.conda/envs/rule_env/lib/python3.11/site-packages/pytorch_lightning/trainer/connectors/logger_connector/result.py:213: You called `self.log('rollout/T', ...)` in your `training_step` but the value needs to be floating to be reduced. Converting it to torch.float32. You can silence this warning by converting the value to floating point yourself. If you don't intend to reduce the value (for instance when logging the global step or epoch) then you can use `self.logger.log_metrics({'rollout/T': ...})` instead.
+/data/home/sczc457/.conda/envs/rule_env/lib/python3.11/site-packages/pytorch_lightning/trainer/connectors/logger_connector/result.py:213: You called `self.log('rollout/B', ...)` in your `training_step` but the value needs to be floating to be reduced. Converting it to torch.float32. You can silence this warning by converting the value to floating point yourself. If you don't intend to reduce the value (for instance when logging the global step or epoch) then you can use `self.logger.log_metrics({'rollout/B': ...})` instead.
+/data/home/sczc457/.conda/envs/rule_env/lib/python3.11/site-packages/pytorch_lightning/trainer/connectors/logger_connector/result.py:213: You called `self.log('rollout/samples', ...)` in your `training_step` but the value needs to be floating to be reduced. Converting it to torch.float32. You can silence this warning by converting the value to floating point yourself. If you don't intend to reduce the value (for instance when logging the global step or epoch) then you can use `self.logger.log_metrics({'rollout/samples': ...})` instead.
+Traceback (most recent call last):
+  File "/data/run01/sczc457/rule-decision/run_train.py", line 232, in <module>
+    train(args)
+  File "/data/run01/sczc457/rule-decision/run_train.py", line 166, in train
+    trainer.fit(agent, train_dataloaders=steps_loader, ckpt_path=ckpt_path)
+  File "/data/home/sczc457/.conda/envs/rule_env/lib/python3.11/site-packages/pytorch_lightning/trainer/trainer.py", line 560, in fit
+    call._call_and_handle_interrupt(
+  File "/data/home/sczc457/.conda/envs/rule_env/lib/python3.11/site-packages/pytorch_lightning/trainer/call.py", line 49, in _call_and_handle_interrupt
+    return trainer_fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data/home/sczc457/.conda/envs/rule_env/lib/python3.11/site-packages/pytorch_lightning/trainer/trainer.py", line 598, in _fit_impl
+    self._run(model, ckpt_path=ckpt_path)
+  File "/data/home/sczc457/.conda/envs/rule_env/lib/python3.11/site-packages/pytorch_lightning/trainer/trainer.py", line 1011, in _run
+    results = self._run_stage()
+              ^^^^^^^^^^^^^^^^^
+  File "/data/home/sczc457/.conda/envs/rule_env/lib/python3.11/site-packages/pytorch_lightning/trainer/trainer.py", line 1055, in _run_stage
+    self.fit_loop.run()
+  File "/data/home/sczc457/.conda/envs/rule_env/lib/python3.11/site-packages/pytorch_lightning/loops/fit_loop.py", line 216, in run
+    self.advance()
+  File "/data/home/sczc457/.conda/envs/rule_env/lib/python3.11/site-packages/pytorch_lightning/loops/fit_loop.py", line 458, in advance
+    self.epoch_loop.run(self._data_fetcher)
+  File "/data/home/sczc457/.conda/envs/rule_env/lib/python3.11/site-packages/pytorch_lightning/loops/training_epoch_loop.py", line 152, in run
+    self.advance(data_fetcher)
+  File "/data/home/sczc457/.conda/envs/rule_env/lib/python3.11/site-packages/pytorch_lightning/loops/training_epoch_loop.py", line 350, in advance
+    batch_output = self.manual_optimization.run(kwargs)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data/home/sczc457/.conda/envs/rule_env/lib/python3.11/site-packages/pytorch_lightning/loops/optimization/manual.py", line 95, in run
+    self.advance(kwargs)
+  File "/data/home/sczc457/.conda/envs/rule_env/lib/python3.11/site-packages/pytorch_lightning/loops/optimization/manual.py", line 115, in advance
+    training_step_output = call._call_strategy_hook(trainer, "training_step", *kwargs.values())
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data/home/sczc457/.conda/envs/rule_env/lib/python3.11/site-packages/pytorch_lightning/trainer/call.py", line 329, in _call_strategy_hook
+    output = fn(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^
+  File "/data/home/sczc457/.conda/envs/rule_env/lib/python3.11/site-packages/pytorch_lightning/strategies/strategy.py", line 391, in training_step
+    return self.lightning_module.training_step(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data/run01/sczc457/rule-decision/zxreinforce/ppo.py", line 233, in training_step
+    r_flat = ret.detach()
+             ^^^
+UnboundLocalError: cannot access local variable 'ret' where it is not associated with a value

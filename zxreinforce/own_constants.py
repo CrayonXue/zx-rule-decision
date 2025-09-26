@@ -14,7 +14,7 @@ HADAMARD = [0,0,0,0,1]
 
 # Number of node/edge actions
 N_NODE_ACTIONS = 5
-N_EDGE_ACTIONS = 3
+N_EDGE_ACTIONS = 2
 
 
 # one-hot encoding for the angles: 0, pi/2, 3pi/4, pi, 5pi/4, 3pi/2, 7pi/4
