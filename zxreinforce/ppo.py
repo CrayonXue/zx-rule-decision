@@ -1,4 +1,4 @@
-# ppo_gnn.py
+# ppo.py
 import numpy as np
 from typing import List, Tuple, Union
 import time
@@ -11,6 +11,7 @@ from torch_geometric.data import Batch, Data
 
 from .gnn import PolicyValueNet  # uses your GraphEncoder + Policy/Value heads
 from .own_constants import N_NODE_ACTIONS, N_EDGE_ACTIONS
+from .subproc_vec_env import SubprocVecEnv
 
 def masked_categorical(logits: torch.Tensor, mask: torch.Tensor, neg_large: float = -1e4) -> Categorical:
     # logits, mask: [B, A]
@@ -60,7 +61,8 @@ class PPOLightningGNN(pl.LightningModule):
     ):
         super().__init__()
         self.save_hyperparameters(ignore=["env_fn"])
-        self.envs = [env_fn() for _ in range(num_envs)]
+        # self.envs = [env_fn() for _ in range(num_envs)]
+        self.vec = SubprocVecEnv([env_fn for _ in range(num_envs)], start_method="spawn")
 
         self.net = PolicyValueNet(gnn_in_dim=node_feat_dim, emb=emb_dim, hid=hid_dim)
 
@@ -84,7 +86,7 @@ class PPOLightningGNN(pl.LightningModule):
         self._completed_returns: List[float] = []
         self._completed_lengths: List[int] = []
 
-        self.register_buffer("_total_env_steps", torch.tensor(0, dtype=torch.long))
+        self.register_buffer("_total_env_steps", torch.tensor(0.0, dtype=torch.float32))
 
         self.reset_envs()
 
@@ -92,12 +94,14 @@ class PPOLightningGNN(pl.LightningModule):
         return torch.optim.Adam(self.parameters(), lr=self.lr)
 
     def reset_envs(self):
-        # Each env.reset() should return Data
-        self.obs = []
-        for env in self.envs:
-            ret = env.reset()
-            data, mask = ret
-            self.obs.append({"data": data, "mask": mask})
+        results = self.vec.reset()
+        self.obs = [{"data": d, "mask": m} for (d, m) in results]
+        # # Each env.reset() should return Data
+        # self.obs = []
+        # for env in self.envs:
+        #     ret = env.reset()
+        #     data, mask = ret
+        #     self.obs.append({"data": data, "mask": mask})
 
     @torch.no_grad()
     def _obs_to_batch(self, obs_batch: List[dict]) -> Tuple[Batch, torch.Tensor]:
@@ -129,36 +133,26 @@ class PPOLightningGNN(pl.LightningModule):
         return action, logprob, values
 
     def _step_envs(self, actions: torch.Tensor):
-        next_obs, rewards, dones = [], [], []
-        for i, env in enumerate(self.envs):
-            a = int(actions[i].item())
-            ret = env.step(a)
-            # step may return (Data, mask, r, d) or (obs, r, d, info)
-            if isinstance(ret, tuple) and len(ret) >= 4:
-                if isinstance(ret[0], Data):
-                    data, mask, r, d = ret[0], ret[1], ret[2], ret[3]
-            else:
-                raise RuntimeError("Unexpected env.step return format")
-
-            if d:
-                ret2 = env.reset()
-                data, mask = ret2[0], ret2[1]
-
-
-            next_obs.append({"data": data, "mask": mask})
-            rewards.append(float(r))
-            dones.append(bool(d))
-
-            # episodic stats
-            self._ep_ret[i] += float(r)
+        # actions: [B] on cuda; move to cpu ints
+        a_np = actions.detach().to("cpu").numpy()
+        next_obs, rewards, dones = self.vec.step(a_np)
+        # episodic stats
+        for i in range(self.num_envs):
+            r, d = float(rewards[i]), bool(dones[i])
+            self._ep_ret[i] += r
             self._ep_len[i] += 1
             if d:
-                self._completed_returns.append(float(self._ep_ret[i]))
-                self._completed_lengths.append(int(self._ep_len[i]))
+                self._completed_returns.append(self._ep_ret[i])
+                self._completed_lengths.append(self._ep_len[i])
                 self._ep_ret[i] = 0.0
                 self._ep_len[i] = 0
+        return next_obs, rewards, dones
 
-        return next_obs, np.asarray(rewards, dtype=np.float32), np.asarray(dones, dtype=np.bool_)
+    def on_train_end(self):
+        try:
+            self.vec.close()
+        except Exception:
+            pass
 
     def collect_rollout(self):
         obs_buf, act_buf, logp_buf, val_buf, rew_buf, done_buf = [], [], [], [], [], []
@@ -168,9 +162,7 @@ class PPOLightningGNN(pl.LightningModule):
             act_buf.append(action)
             logp_buf.append(logp)
             val_buf.append(value)
-            # act_buf.append(action.cpu())
-            # logp_buf.append(logp.cpu())
-            # val_buf.append(value.cpu())            
+    
             self.obs, rewards, dones = self._step_envs(action)
             rew_buf.append(torch.from_numpy(rewards))
             done_buf.append(torch.from_numpy(dones.astype(np.float32)))
@@ -217,9 +209,9 @@ class PPOLightningGNN(pl.LightningModule):
         # end_time = time.time()
         # self.log("time/rollout", end_time - start_time, prog_bar=False, on_step=True, on_epoch=False)
 
-        self._total_env_steps += torch.tensor(self.rollout_steps * self.num_envs, device=self.device)
-        self.log("counters/total_env_steps", self._total_env_steps, on_step=True, on_epoch=False, prog_bar=True)
- 
+        self._total_env_steps += self.rollout_steps * self.num_envs
+        self.log_counter("counters/total_env_steps", self._total_env_steps, prog_bar=True)
+        self.log_counter("counters/train_step", self.global_step, prog_bar=True)
 
 
         # 2) GAE
@@ -231,27 +223,24 @@ class PPOLightningGNN(pl.LightningModule):
         adv = _normalize_adv(adv.reshape(total)).to(self.device)
         ret = ret.reshape(total).to(self.device)
         
-        # act = act.reshape(total).cpu()
-        # logp_old = logp_old.reshape(total).cpu()
-        # adv = _normalize_adv(adv.reshape(total)).cpu()
-        # ret = ret.reshape(total).cpu()
-
 
         with torch.no_grad():
-                # rollout stats
-                self.log("rollout/T", torch.tensor(self.rollout_steps, device=self.device), on_step=True, on_epoch=False)
-                self.log("rollout/B", torch.tensor(self.num_envs, device=self.device), on_step=True, on_epoch=False)
-                self.log("rollout/samples", torch.tensor(self.rollout_steps*self.num_envs, device=self.device), on_step=True, on_epoch=False)
-                self.log("rollout/reward_mean", rew.float().mean(), on_step=True, on_epoch=False, prog_bar=True)
-                self.log("rollout/reward_std", rew.float().std(unbiased=False), on_step=True, on_epoch=False)
-                self.log("rollout/done_frac", done.float().mean(), on_step=True, on_epoch=False)
+            # rollout constants
+            self.log_scalar("rollout/T", self.rollout_steps)
+            self.log_scalar("rollout/B", self.num_envs)
+            self.log_scalar("rollout/samples", self.rollout_steps * self.num_envs)
 
-                # value explained variance
-                v_flat = val.detach().reshape(-1).to(self.device)
-                r_flat = ret.detach()
-                var_y = torch.var(r_flat, unbiased=False)
-                ev = 1.0 - torch.var(r_flat - v_flat, unbiased=False) / (var_y + 1e-8)
-                self.log("value/explained_variance", ev, on_step=True, on_epoch=False)
+            # reward stats
+            self.log_scalar("rollout/reward_mean", rew.float().mean(), prog_bar=True)
+            self.log_scalar("rollout/reward_std", rew.float().std(unbiased=False))
+            self.log_scalar("rollout/done_frac", done.float().mean())
+
+            # value explained variance
+            v_flat = val.detach().reshape(-1)
+            r_flat = ret.detach()
+            var_y = torch.var(r_flat, unbiased=False)
+            ev = 1.0 - torch.var(r_flat - v_flat, unbiased=False) / (var_y + 1e-8)
+            self.log_scalar("value/explained_variance", ev)
 
 
         # 3) Flatten obs (list of lists) into length TB
@@ -326,7 +315,50 @@ class PPOLightningGNN(pl.LightningModule):
             self._completed_returns.clear()
             self._completed_lengths.clear()
 
-        self.log_dict(metrics, prog_bar=True, on_step=True, on_epoch=False)
+        self.log_scalars(metrics, prog_bar_keys=("loss/policy", "stats/return_mean"))
+
 
     def on_train_start(self):
         self.reset_envs()
+
+
+    # ---------------- Logging helpers ----------------
+    def _to_float_tensor(self, x):
+        if isinstance(x, torch.Tensor):
+            return x.detach().to(torch.float32)
+        return torch.tensor(float(x), dtype=torch.float32)
+
+    def log_scalar(self, name, value, prog_bar=False, sync_dist=False):
+        """
+        Use for real-valued metrics that can be reduced (loss, KL, entropy, returns, etc.)
+        """
+        v = self._to_float_tensor(value)
+        self.log(name, v, on_step=True, on_epoch=False, prog_bar=prog_bar, sync_dist=sync_dist)
+
+    def log_scalars(self, metrics: dict, prog_bar_keys=(), sync_dist=False):
+        """
+        Batch log of scalar metrics; prog_bar_keys is an iterable of names to show on the progress bar.
+        """
+        for k, v in metrics.items():
+            self.log_scalar(k, v, prog_bar=(k in prog_bar_keys), sync_dist=sync_dist)
+
+    def log_counter(self, name, value, step=None, prog_bar=False):
+        """
+        Use for integer counters (no reduction). Sends directly to the logger.
+        Optionally mirrors as a float to the progress bar.
+        """
+        # extract plain int
+        if isinstance(value, torch.Tensor):
+            value = int(value.detach().item())
+        else:
+            value = int(value)
+        step = int(self.global_step) if step is None else int(step)
+
+        if getattr(self, "logger", None) is not None:
+            # avoids Lightning reduction path and the 'needs to be floating' warning
+            self.logger.log_metrics({name: value}, step=step)
+
+        if prog_bar:
+            # mirror as float for the bar; still harmless to reduce
+            self.log(name, float(value), on_step=True, on_epoch=False, prog_bar=True)
+    # -------------------------------------------------

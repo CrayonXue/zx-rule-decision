@@ -2,7 +2,6 @@
 #SBATCH --job-name=rule_zx
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=1
 #SBATCH --gres=gpu:1  # 确保这一行正确指定了 GPU 数量
 #SBATCH --time=3-01:00:00
 #SBATCH --partition=gpu  # 确保分区支持 GPU
@@ -20,6 +19,14 @@ export https_proxy=http://10.244.6.36:8080
 # SwanLab configuration
 export SWANLAB_API_KEY="84RTqEhOn8jTqDLxYCR3F"
 
+
+
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
+export PYTORCH_NUM_THREADS=1
+
 # ===============================================================
 TRAIN=True # Set to True if you want to train the model, otherwise it will skip training.
 
@@ -36,8 +43,10 @@ p_h=0.2
 
 max_epochs=10000
 ppo_updates_per_epoch=1
-max_train_steps=10000
+max_train_steps=100000
 num_envs=8
+rollout_steps=256
+minibatch_size=128
 env_max_steps=100
 logger_type='swanlab'
 if [ "$TRAIN" = "True" ]; then
@@ -46,6 +55,8 @@ if [ "$TRAIN" = "True" ]; then
     --ppo_updates_per_epoch $ppo_updates_per_epoch \
     --max_train_steps $max_train_steps \
     --num_envs $num_envs \
+    --rollout_steps $rollout_steps \
+    --minibatch_size $minibatch_size \
     --logger_type $logger_type \
     --env_max_steps $env_max_steps \
     --num_qubits_min $num_qubits_min \

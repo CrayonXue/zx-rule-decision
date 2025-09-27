@@ -52,11 +52,6 @@ class PolicyValueNet(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(hid, N_NODE_ACTIONS)
         )
-        self.edge_head = nn.Sequential(
-            nn.Linear(emb * 2, hid), nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hid, N_EDGE_ACTIONS)
-        )
         self.value_head = nn.Sequential(
             nn.Linear(emb, hid), nn.ReLU(),
             nn.Linear(hid, 1)
@@ -66,33 +61,16 @@ class PolicyValueNet(nn.Module):
         # Encode nodes
         h = self.enc(batch.x, batch.edge_index)          # [sumN, emb]
         g = global_mean_pool(h, batch.batch)             # [B, emb]
-        B = g.size(0)
+        B = g.size(0) # number of environments
         device = h.device
 
         # Per-node logits
         node_logits_per_node = self.node_head(h)         # [sumN, N_NODE_ACTIONS]
 
-        # Per-edge logits for EVERY edge in edge_index (no dedup; keep env order)
-        E_total = batch.edge_index.size(1)
-        if E_total > 0:
-            src, dst = batch.edge_index[0], batch.edge_index[1]   # [sumE]
-            h_u, h_v = h[src], h[dst]
-            edge_logits_per_edge = self.edge_head(torch.cat([h_u, h_v], dim=-1))  # [sumE, N_EDGE_ACTIONS]
-            # Assign each edge to a graph via its source node's graph id (src and dst must belong to same graph)
-            edge_batch = batch.batch[src]                          # [sumE]
-        else:
-            edge_logits_per_edge = h.new_zeros((0, N_EDGE_ACTIONS))
-            edge_batch = torch.zeros(0, dtype=torch.long, device=device)
-
         # Counts and offsets per graph
         node_counts = torch.bincount(batch.batch, minlength=B)     # [B]
-        edge_counts = torch.bincount(edge_batch, minlength=B)      # [B]
-
         node_offsets = torch.cumsum(
             torch.cat([torch.zeros(1, dtype=torch.long, device=device), node_counts[:-1]]), dim=0
-        )  # [B]
-        edge_offsets = torch.cumsum(
-            torch.cat([torch.zeros(1, dtype=torch.long, device=device), edge_counts[:-1]]), dim=0
         )  # [B]
 
         values = self.value_head(g).squeeze(-1)                    # [B]
@@ -101,16 +79,11 @@ class PolicyValueNet(nn.Module):
         logits_list = []
         for i in range(B):
             n_i = int(node_counts[i].item())
-            e_i = int(edge_counts[i].item())
             n0 = int(node_offsets[i].item())
-            e0 = int(edge_offsets[i].item())
 
             # Flatten node/edge chunks for this graph
             node_flat = node_logits_per_node[n0:n0 + n_i].reshape(-1)   # n_i * N_NODE_ACTIONS
-            edge_flat = edge_logits_per_edge[e0:e0 + e_i].reshape(-1)   # e_i * N_EDGE_ACTIONS
-
-            vec = torch.cat([node_flat, edge_flat], dim=0)  # [A_i]
-            logits_list.append(vec)
+            logits_list.append(node_flat)
 
         # Right-pad to batchwise max action length
         maxA = max((v.numel() for v in logits_list), default=1)

@@ -1,17 +1,0 @@
-swanlab: Tracking run with swanlab version 0.6.10
-swanlab: Run data will be saved locally in 
-/data/run01/sczc457/rule-decision/runs/ZX-PPO-GNN_nq[2-3]_gates[3-6]_envs8_T2048
-_mb512_ppo4_lr0.0003_20250925-222744/swanlab/run-20250925_222753-bjlejcla1nrvneh
-cyk93t
-swanlab: 👋 Hi Siuet,welcome to swanlab!
-swanlab: Syncing run 
-ZX-PPO-GNN_nq[2-3]_gates[3-6]_envs8_T2048_mb512_ppo4_lr0.0003_20250925-222744 to
-the cloud
-swanlab: 🏠 View project at https://swanlab.cn/@Siuet/ZX-rule
-swanlab: 🚀 View run at 
-https://swanlab.cn/@Siuet/ZX-rule/runs/bjlejcla1nrvnehcyk93t
-Training: |          | 0/? [00:00<?, ?it/s]Training: |          | 0/? [00:00<?, ?it/s]Epoch 0:   0%|          | 0/1 [00:00<?, ?it/s]swanlab: Error happened while training
-swanlab: 🏠 View project at https://swanlab.cn/@Siuet/ZX-rule
-swanlab: 🚀 View run at 
-https://swanlab.cn/@Siuet/ZX-rule/runs/bjlejcla1nrvnehcyk93t
-Epoch 0:   0%|          | 0/1 [04:04<?, ?it/s]

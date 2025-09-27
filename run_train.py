@@ -173,6 +173,12 @@ def train(args):
 
 
 if __name__ == "__main__":
+    import multiprocessing as mp
+    try:
+        mp.set_start_method("spawn", force=True)
+    except RuntimeError:
+        pass
+
     parser = argparse.ArgumentParser(description="PPO-GNN training for ZXCalculus with PyTorch Lightning")
 
     # Repro
@@ -186,7 +192,7 @@ if __name__ == "__main__":
     parser.add_argument("--resume_from", type=str, default="", help="Path to a checkpoint to resume from.")
 
     # Hardware
-    parser.add_argument("--accelerator", type=str, default="auto", choices=["auto", "cpu", "gpu"])
+    parser.add_argument("--accelerator", type=str, default="gpu", choices=["auto", "cpu", "gpu"])
     parser.add_argument("--devices", type=int, default=1)
     parser.add_argument("--precision", type=str, default="16-mixed")
 

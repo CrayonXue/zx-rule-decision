@@ -22,6 +22,7 @@ class ZXCalculus():
                  max_steps:int=1000, 
                  resetter=None,
                  count_down_from:int=20,
+                 step_penalty:float=0.01,
                  extra_state_info:bool=False,
                  adapted_reward:bool=False):
         """max_steps: maximum number of steps per trajectory,
@@ -34,13 +35,13 @@ class ZXCalculus():
         self.count_down_from = count_down_from
         self.extra_state_info = extra_state_info
         self.adapted_reward = adapted_reward
+        self.step_penalty = step_penalty
 
  
 
     def get_observation(self)-> tuple:
         """ observation
         Get data,mask from the environment's graph"""
-        self.id2pos = {int(v_id): i for i, v_id in enumerate(self.graph.vertices())}
         nodes_features = []
         for v in self.graph.vertices():
             if v in self.graph.inputs():
@@ -119,13 +120,13 @@ class ZXCalculus():
             # Applies the action    
             self.apply_action(action)
             if len(self.selected_node) != self.n_spiders:
-                self.selected_node = np.zeros(self.n_spiders, dtype=np.int32)
+                raise ValueError(f"Length of selected_node {len(self.selected_node)} does not match number of spiders {self.n_spiders}")
             data,mask = self.get_observation()
 
             ## Calculate the reward
             self.previous_left_nodes_by_continuous, self.previous_left_nodes_by_continuous_and_broken = self.current_left_nodes_by_continuous, self.current_left_nodes_by_continuous_and_broken
             self.current_left_nodes_by_continuous, self.current_left_nodes_by_continuous_and_broken = self.num_nodes_left
-            delta_left_continuous, delta_left_cont_and_broken = self.delta_left_nodes()
+            # delta_left_continuous, delta_left_cont_and_broken = self.delta_left_nodes()
             self.previous_high_degree_nodes = self.current_high_degree_nodes
             self.current_high_degree_nodes = self.count_high_degree_nodes()
 
@@ -140,7 +141,7 @@ class ZXCalculus():
                 +0.1*(self.n_spiders-self.current_left_nodes_by_continuous_and_broken)/self.n_spiders 
                 +0.45*(self.n_spiders-self.current_high_degree_nodes)/self.n_spiders
             )
-            
+            reward = reward - self.step_penalty
             return data,mask, reward, done
     
 
@@ -162,6 +163,10 @@ class ZXCalculus():
     def n_edges(self):
         """Number of edges in diagram"""
         return len(list(self.graph.edges()))
+
+    @property
+    def id2pos(self):
+        return {int(v_id): i for i, v_id in enumerate(self.graph.vertices())}
 
     def count_high_degree_nodes(self, degree_threshold: int = 3) -> int:
         return sum(1 for v in self.graph.vertices() if len(self.graph.neighbors(v)) > degree_threshold)
@@ -196,23 +201,13 @@ class ZXCalculus():
     def apply_action(self, action:int):
         self.graph = self.graph.copy()
         self.node_actions_fn = [self.select_node, self.unfuse_rule, self.color_change_rule, self.split_hadamard, self.pi_rule]
-        self.edge_actions_fn = [self.fuse_rule, self.bialgebra_rule]
         if len(self.node_actions_fn) != N_NODE_ACTIONS:
             raise ValueError(f"Number of node actions {len(self.node_actions_fn)} does not match N_NODE_ACTIONS {N_NODE_ACTIONS}")
-        if len(self.edge_actions_fn) != N_EDGE_ACTIONS:
-            raise ValueError(f"Number of edge actions {len(self.edge_actions_fn)} does not match N_EDGE_ACTIONS {N_EDGE_ACTIONS}")
-
         if action < N_NODE_ACTIONS * self.n_spiders:
             # Action is node action
             node_idx = action//N_NODE_ACTIONS
             action_idx = action % N_NODE_ACTIONS
             success = self.node_actions_fn[action_idx](node_idx)
-        elif action < N_NODE_ACTIONS *  self.n_spiders + N_EDGE_ACTIONS *self.n_edges:
-            # Action is edge action
-            action = action - (N_NODE_ACTIONS * self.n_spiders)
-            edge_idx = action // N_EDGE_ACTIONS
-            action_idx = action % N_EDGE_ACTIONS
-            success = self.edge_actions_fn[action_idx](edge_idx)
         else:
             raise ValueError(f"Action {action} not recognized")
         self.graph = self.graph.copy()
@@ -235,6 +230,7 @@ class ZXCalculus():
                     phase=0,
                     qubit=self.graph.qubit(v),
                     index=child_idx)
+        self.selected_node = np.append(self.selected_node,[self.selected_node[node_idx]])
         # move selected neighbours of action node to child node
         neighbours = list(self.graph.neighbors(v))
         for neighbor in neighbours:
@@ -269,6 +265,7 @@ class ZXCalculus():
         for n in neighbours:
             self.graph.remove_edge((v,n))
             h = self.graph.add_vertex(ty=VertexType.H_BOX,qubit=determine_qubit([self.graph.qubit(n),self.graph.qubit(v)]),row=determine_row([self.graph.row(n),self.graph.row(v)]))
+            self.selected_node = np.append(self.selected_node, [0])
             self.graph.add_edge((v,h))
             self.graph.add_edge((h,n))
         return True
@@ -289,21 +286,30 @@ class ZXCalculus():
         u1 = self.graph.add_vertex(ty=VertexType.X, phase=1/2, qubit=self.graph.qubit(v), row=self.graph.row(v))
         u2 = self.graph.add_vertex(ty=VertexType.Z, phase=1/2, qubit=self.graph.qubit(v), row=self.graph.row(v)+1)
         u3 = self.graph.add_vertex(ty=VertexType.X, phase=1/2, qubit=self.graph.qubit(v), row=self.graph.row(v)+2)
+        self.selected_node = np.append(self.selected_node, [self.selected_node[node_idx]]*3)
 
         self.graph.add_edge((neighbours[0], u1))
         self.graph.add_edge((neighbours[1], u3))
         self.graph.add_edge((u1, u2))
         self.graph.add_edge((u2, u3))
+        self.selected_node = np.delete(self.selected_node, self.id2pos[v])
         self.graph.remove_vertex(v)
+        
         return True
 
     def pi_rule(self, node_idx):
+        old_nodes = self.n_spiders
         """node action"""
         v = list(self.graph.vertices())[node_idx]
-        if self.graph.type(v) == VertexType.Z:
-            return pi_commute_Z(self.graph, v)
-        elif self.graph.type(v) == VertexType.X:
-            return pi_commute_X(self.graph, v)
+        if (self.graph.type(v) == VertexType.Z or self.graph.type(v) == VertexType.X):
+            if self.graph.type(v) == VertexType.Z:
+                pi_commute_Z(self.graph, v)
+            elif self.graph.type(v) == VertexType.X:
+                pi_commute_X(self.graph, v)
+
+            new_nodes = self.n_spiders
+            if new_nodes > old_nodes:
+                self.selected_node = np.append(self.selected_node, [0]*(new_nodes-old_nodes))
         else:
             return False
 
@@ -311,7 +317,10 @@ class ZXCalculus():
     def fuse_rule(self, edge_idx):
         """Fuse action"""
         s,t = list(self.graph.edges())[edge_idx]
+        s_pos = self.id2pos.get(int(s), None)
+        t_pos = self.id2pos.get(int(t), None)
         if fuse(self.graph, s, t):
+            self.selected_node = np.delete(self.selected_node, max(s_pos,t_pos))
             return True
         else:
             return False
@@ -329,13 +338,11 @@ class ZXCalculus():
             v0n = [n for n in self.graph.neighbors(v0) if not n == v1]
             v1n = [n for n in self.graph.neighbors(v1) if not n == v0]
             if len(v0n) >2:
-                self.selected_node = np.zeros(n_spiders, dtype=np.int32)
                 for n in v0n[1:]:
                     pos = self.id2pos.get(int(n), None)
                     self.selected_node[pos] = 1
                 self.unfuse_rule(v0)
             if len(v1n) >2:
-                self.selected_node = np.zeros(n_spiders, dtype=np.int32)
                 for n in v1n[1:]:
                     pos = self.id2pos.get(int(n), None)
                     self.selected_node[pos] = 1
@@ -357,6 +364,7 @@ class ZXCalculus():
                 self.graph.remove_edge((v1,v11))
                 a = self.graph.add_vertex(ty=v1t, phase=0)
                 b = self.graph.add_vertex(ty=v0t, phase=0)
+                self.selected_node = np.append(self.selected_node, [0,0])
                 self.graph.add_edge((v01,a))
                 self.graph.add_edge((v11,b))
                 self.graph.add_edge((a,b))
@@ -370,10 +378,9 @@ class ZXCalculus():
 
     # ==================Action mask=========================
     def get_action_mask(self) -> np.ndarray:
-        cut1 = N_NODE_ACTIONS*self.n_spiders  
-        cut2 = cut1 + N_EDGE_ACTIONS*self.n_edges
-        mask = np.zeros(cut2, dtype=np.int32)
-        for i in range(cut1):
+        cut = N_NODE_ACTIONS*self.n_spiders  
+        mask = np.zeros(cut, dtype=np.int32)
+        for i in range(cut):
             node_idx = i // N_NODE_ACTIONS
             action_idx = i % N_NODE_ACTIONS
             v = list(self.graph.vertices())[node_idx]
@@ -391,28 +398,6 @@ class ZXCalculus():
             elif action_idx == 4: # pi_rule
                 if self.graph.type(v) == VertexType.Z or self.graph.type(v) == VertexType.X:
                     mask[i] = 1
-        for i in range(cut1, cut2):
-            edge_idx = (i - cut1) // N_EDGE_ACTIONS
-            action_idx = (i - cut1) % N_EDGE_ACTIONS
-            s,t = list(self.graph.edges())[edge_idx]
-
-            if action_idx == 0: # fuse_rule
-                if self.graph.type(s) == self.graph.type(t) and (self.graph.type(s) == VertexType.Z or self.graph.type(s) == VertexType.X):
-                    mask[i] = 1
-            elif action_idx == 1: # bialgebra_rule
-                v0t = self.graph.type(s)
-                v1t = self.graph.type(t)
-                v0p = self.graph.phase(s)
-                v1p = self.graph.phase(t)
-                if (v0p == 0 and v1p == 0 and
-                    ((v0t == VertexType.Z and v1t == VertexType.X) or (v0t == VertexType.X and v1t == VertexType.Z))):
-                    v0n = [n for n in self.graph.neighbors(s) if not n == t]
-                    v1n = [n for n in self.graph.neighbors(t) if not n == s]
-                    if (len(v0n) >= 2 or len(v1n) >= 2 and
-                        self.graph.num_edges(s, t) == 1 and # there is exactly one edge between s and t
-                        self.graph.num_edges(s, s) == 0 and # there are no self-loops on s
-                        self.graph.num_edges(t, t) == 0): # there are no self-loops on t
-                        mask[i] = 1
         return mask
 
 
