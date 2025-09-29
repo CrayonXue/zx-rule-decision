@@ -94,7 +94,7 @@ class ZXCalculus():
         2. Set the step counter to zero.
         Return new initial observation
         '''
-        self.graph, self.initial_circuit = self.resetter.reset()
+        self.graph, _ = self.resetter.reset()
 
         self.selected_node = np.zeros(self.n_spiders, dtype=np.int32)
         self.step_counter = 0

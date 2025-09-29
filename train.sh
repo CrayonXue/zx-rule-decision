@@ -28,6 +28,7 @@ export NUMEXPR_NUM_THREADS=1
 export PYTORCH_NUM_THREADS=1
 
 # ===============================================================
+GENERATE=Fasle
 TRAIN=False # Set to True if you want to train the model, otherwise it will skip training.
 EVAL=True  # Set to True if you want to evaluate the model after training.
 
@@ -35,9 +36,9 @@ EVAL=True  # Set to True if you want to evaluate the model after training.
 # ----------------------------------------------------------
 
 num_qubits_min=2
-num_qubits_max=3
-min_gates=3
-max_gates=6
+num_qubits_max=6
+min_gates=5
+max_gates=10
 p_t=0.2
 p_h=0.2
 
@@ -53,6 +54,20 @@ env_max_steps=100
 step_penalty=0.01
 length_penalty=0.01
 logger_type='swanlab'
+
+data_length=10000  # Number of graphs in the graph bank pickle file.
+if [ "$GENERATE" = "True" ]; then
+    python zxreinforce/generate.py \
+    --out_path ./data \
+    --keep_limit $data_length \
+    --num_qubits_min $num_qubits_min \
+    --num_qubits_max $num_qubits_max \
+    --min_gates $min_gates \
+    --max_gates $max_gates
+fi
+
+
+
 if [ "$TRAIN" = "True" ]; then
     python run_train.py \
     --max_epochs $max_epochs \
@@ -67,6 +82,8 @@ if [ "$TRAIN" = "True" ]; then
     --env_max_steps $env_max_steps \
     --step_penalty $step_penalty \
     --length_penalty $length_penalty \
+    --data_dir ./data \
+    --data_length $data_length \
     --num_qubits_min $num_qubits_min \
     --num_qubits_max $num_qubits_max \
     --min_gates $min_gates \
@@ -77,6 +94,8 @@ fi
 
 
 ckpt="runs/ZX-PPO-GNN_nq[2-3]_gates[3-6]_envs8_T256_mb128_ppo4_lr0.0003_20250927-180908/checkpoints/last.ckpt"
+ckpt="runs/ZX-PPO-GNN_nq[5-10]_gates[10-30]_envs8_T512_mb128_ppo4_lr0.0003_20250927-194912/checkpoints/last.ckpt"
+ckpt="runs/ZX-PPO-GNN_nq[2-6]_gates[5-10]_envs8_T512_mb128_ppo4_lr0.0003_20250929-120817/checkpoints/last.ckpt"
 if [ "$EVAL" = "True" ]; then
     python eval.py \
     --ckpt_path $ckpt \
@@ -84,6 +103,8 @@ if [ "$EVAL" = "True" ]; then
     --num_qubits_max $num_qubits_max \
     --min_gates $min_gates \
     --max_gates $max_gates \
+    --data_dir ./data \
+    --data_length $data_length \
     --p_t $p_t \
     --p_h $p_h \
     --env_max_steps $env_max_steps \

@@ -7,7 +7,7 @@ import argparse
 # Your project imports
 from zxreinforce.gnn import PolicyValueNet
 from zxreinforce.zx_env_circuit import ZXCalculus
-from zxreinforce.Resetters import Resetter_Circuit
+from zxreinforce.Resetters import Resetter_GraphBank
 from zxreinforce.own_constants import N_NODE_ACTIONS  # action decoding
 
 # ----- Helpers -----
@@ -74,15 +74,13 @@ def print_topk(masked_logits, probs, k=10):
         print(f"  #{rank+1}: action_id={a:4d}  node={node_idx:3d}  op={a_name:15s}  "
               f"logit={masked_logits[a].item():8.3f}  p={probs[a].item():.4f}")
 
-def build_one_env_graph(seed=123, num_qubits_min=3, num_qubits_max=5,
-                        min_gates=8, max_gates=20, p_t=0.2, p_h=0.2,
+def build_one_env_graph(seed=123, data_dir='./data', num_qubits_min=3, num_qubits_max=5,
+                        min_gates=8, max_gates=20, data_length=1000, p_t=0.2, p_h=0.2,
                         env_max_steps=100, step_penalty=0.01, length_penalty=0.01, adapted_reward=True, count_down_from=20):
-    resetter = Resetter_Circuit(
-        num_qubits_min=num_qubits_min,
-        num_qubits_max=num_qubits_max,
-        min_gates=min_gates,
-        max_gates=max_gates,
-        p_t=p_t, p_h=p_h,
+    exp_name = f"GraphBank_nq[{num_qubits_min}-{num_qubits_max}]_gates[{min_gates}-{max_gates}]_length{data_length}.pkl"
+    bank_path = os.path.join(data_dir, exp_name)
+    resetter = Resetter_GraphBank(
+        bank_path = bank_path,
         seed=seed,    # deterministic example graph
     )
     env = ZXCalculus(
@@ -182,10 +180,12 @@ def eval(args):
     # Build one example graph
     env, data, mask = build_one_env_graph(
         seed=123,
+        data_dir=args.data_dir,
         num_qubits_min=args.num_qubits_min,
         num_qubits_max=args.num_qubits_max,
         min_gates=args.min_gates,
         max_gates=args.max_gates,
+        data_length=args.data_length,
         p_t=args.p_t,
         p_h=args.p_h,
         env_max_steps=args.env_max_steps,
@@ -225,6 +225,8 @@ if __name__ == "__main__":
     parser.add_argument("--count_down_from", type=int, default=20)
 
     # Resetter (random circuit generator)
+    parser.add_argument("--data_dir", type=str, default="./data", help="Directory containing graph bank pickle files.")
+    parser.add_argument("--data_length", type=int, default=1000, help="Number of graphs in the graph bank pickle file.")
     parser.add_argument("--num_qubits_min", type=int, default=2)
     parser.add_argument("--num_qubits_max", type=int, default=6)
     parser.add_argument("--min_gates", type=int, default=5)

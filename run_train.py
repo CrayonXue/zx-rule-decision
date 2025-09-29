@@ -21,7 +21,7 @@ except Exception:
     HAS_SWAN = False
 
 # Local modules
-from zxreinforce.Resetters import Resetter_Circuit
+from zxreinforce.Resetters import Resetter_GraphBank
 from zxreinforce.zx_env_circuit import ZXCalculus
 from zxreinforce.ppo import PPOLightningGNN
 
@@ -41,13 +41,10 @@ class StepsDataset(torch.utils.data.Dataset):
 def build_env_fn(args):
     """Factory returning a fresh environment instance each time it's called."""
     def make_env():
-        resetter = Resetter_Circuit(
-            num_qubits_min=args.num_qubits_min,
-            num_qubits_max=args.num_qubits_max,
-            min_gates=args.min_gates,
-            max_gates=args.max_gates,
-            p_t=args.p_t,
-            p_h=args.p_h,
+        exp_name = f"GraphBank_nq[{args.num_qubits_min}-{args.num_qubits_max}]_gates[{args.min_gates}-{args.max_gates}]_length{args.data_length}.pkl"
+        bank_path = os.path.join(args.data_dir, exp_name)
+        resetter = Resetter_GraphBank(
+            bank_path=bank_path,
             seed=None if args.resetter_seed < 0 else args.resetter_seed,
         )
         env = ZXCalculus(
@@ -230,6 +227,8 @@ if __name__ == "__main__":
     parser.add_argument("--count_down_from", type=int, default=20)
 
     # Resetter (random circuit generator)
+    parser.add_argument("--data_dir", type=str, default="./data", help="Directory containing graph bank pickle files.")
+    parser.add_argument("--data_length", type=int, default=1000, help="Number of graphs in the graph bank pickle file.")
     parser.add_argument("--num_qubits_min", type=int, default=2)
     parser.add_argument("--num_qubits_max", type=int, default=6)
     parser.add_argument("--min_gates", type=int, default=5)
