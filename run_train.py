@@ -54,6 +54,8 @@ def build_env_fn(args):
             max_steps=args.env_max_steps,
             resetter=resetter,
             count_down_from=args.count_down_from,
+            step_penalty=args.step_penalty,
+            length_penalty=args.length_penalty,
             extra_state_info=False,
             adapted_reward=args.adapted_reward,
         )
@@ -222,6 +224,8 @@ if __name__ == "__main__":
 
     # Environment (ZXCalculus)
     parser.add_argument("--env_max_steps", type=int, default=100)
+    parser.add_argument("--step_penalty", type=float, default=0.02)
+    parser.add_argument("--length_penalty", type=float, default=0.0)
     parser.add_argument("--adapted_reward", action="store_true", default=True)
     parser.add_argument("--count_down_from", type=int, default=20)
 

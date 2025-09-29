@@ -28,8 +28,8 @@ export NUMEXPR_NUM_THREADS=1
 export PYTORCH_NUM_THREADS=1
 
 # ===============================================================
-TRAIN=True # Set to True if you want to train the model, otherwise it will skip training.
-
+TRAIN=False # Set to True if you want to train the model, otherwise it will skip training.
+EVAL=True  # Set to True if you want to evaluate the model after training.
 
 # ===============================================================
 # ----------------------------------------------------------
@@ -44,25 +44,51 @@ p_h=0.2
 max_epochs=10000
 ppo_updates_per_epoch=1
 max_train_steps=100000
+emb_dim=512
+hid_dim=512
 num_envs=8
-rollout_steps=256
+rollout_steps=512
 minibatch_size=128
 env_max_steps=100
+step_penalty=0.01
+length_penalty=0.01
 logger_type='swanlab'
 if [ "$TRAIN" = "True" ]; then
     python run_train.py \
     --max_epochs $max_epochs \
     --ppo_updates_per_epoch $ppo_updates_per_epoch \
     --max_train_steps $max_train_steps \
+    --emb_dim $emb_dim \
+    --hid_dim $hid_dim \
     --num_envs $num_envs \
     --rollout_steps $rollout_steps \
     --minibatch_size $minibatch_size \
     --logger_type $logger_type \
     --env_max_steps $env_max_steps \
+    --step_penalty $step_penalty \
+    --length_penalty $length_penalty \
     --num_qubits_min $num_qubits_min \
     --num_qubits_max $num_qubits_max \
     --min_gates $min_gates \
     --max_gates $max_gates \
     --p_t $p_t \
     --p_h $p_h 
+fi
+
+
+ckpt="runs/ZX-PPO-GNN_nq[2-3]_gates[3-6]_envs8_T256_mb128_ppo4_lr0.0003_20250927-180908/checkpoints/last.ckpt"
+if [ "$EVAL" = "True" ]; then
+    python eval.py \
+    --ckpt_path $ckpt \
+    --num_qubits_min $num_qubits_min \
+    --num_qubits_max $num_qubits_max \
+    --min_gates $min_gates \
+    --max_gates $max_gates \
+    --p_t $p_t \
+    --p_h $p_h \
+    --env_max_steps $env_max_steps \
+    --step_penalty $step_penalty \
+    --length_penalty $length_penalty \
+    --adapted_reward \
+    --count_down_from 20
 fi

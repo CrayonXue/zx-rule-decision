@@ -23,6 +23,7 @@ class ZXCalculus():
                  resetter=None,
                  count_down_from:int=20,
                  step_penalty:float=0.01,
+                 length_penalty:float=0.001,
                  extra_state_info:bool=False,
                  adapted_reward:bool=False):
         """max_steps: maximum number of steps per trajectory,
@@ -36,6 +37,7 @@ class ZXCalculus():
         self.extra_state_info = extra_state_info
         self.adapted_reward = adapted_reward
         self.step_penalty = step_penalty
+        self.length_penalty = length_penalty
 
  
 
@@ -80,6 +82,9 @@ class ZXCalculus():
             edge_index=edge_index)
         return data, mask
 
+    def is_terminal(self) -> bool:
+        return (self.current_left_nodes_by_continuous == 0
+                and self.current_high_degree_nodes == 0)
 
     def reset(self)-> tuple:
         '''
@@ -94,10 +99,7 @@ class ZXCalculus():
         self.selected_node = np.zeros(self.n_spiders, dtype=np.int32)
         self.step_counter = 0
 
-        # For keep track of previous spiders for reward function
-        self.previous_left_nodes_by_continuous, self.previous_left_nodes_by_continuous_and_broken = self.num_nodes_left
         self.current_left_nodes_by_continuous, self.current_left_nodes_by_continuous_and_broken = self.num_nodes_left
-        self.previous_high_degree_nodes = self.count_high_degree_nodes()
         self.current_high_degree_nodes = self.count_high_degree_nodes()
         return self.get_observation()
     
@@ -116,6 +118,13 @@ class ZXCalculus():
             # Return observation and reward, end_episode
             data,mask = self.reset()
             return data,mask, 0, 1
+        
+        # NEW: handle “already terminal at start of step” (including right after reset)
+        if self.is_terminal():
+            reward = self.compute_dense_reward()
+            data2, mask2 = self.reset()
+            return data2, mask2, reward, 1
+        
         else:
             # Applies the action    
             self.apply_action(action)
@@ -124,35 +133,28 @@ class ZXCalculus():
             data,mask = self.get_observation()
 
             ## Calculate the reward
-            self.previous_left_nodes_by_continuous, self.previous_left_nodes_by_continuous_and_broken = self.current_left_nodes_by_continuous, self.current_left_nodes_by_continuous_and_broken
             self.current_left_nodes_by_continuous, self.current_left_nodes_by_continuous_and_broken = self.num_nodes_left
-            # delta_left_continuous, delta_left_cont_and_broken = self.delta_left_nodes()
-            self.previous_high_degree_nodes = self.current_high_degree_nodes
             self.current_high_degree_nodes = self.count_high_degree_nodes()
 
-            if self.current_left_nodes_by_continuous == 0 and self.current_high_degree_nodes == 0:
-                done = 1
-            else:
-                done = 0
+            done = 1 if self.is_terminal() else 0
+
             # reward = delta_left_continuous + 0.2*delta_left_cont_and_broken + self.delta_high_degree_nodes()
             # reward = -self.current_left_nodes_by_continuous - 0.2*self.current_left_nodes_by_continuous_and_broken - self.current_high_degree_nodes
-            reward =(
-                0.45*(self.n_spiders-self.current_left_nodes_by_continuous)/self.n_spiders 
-                +0.1*(self.n_spiders-self.current_left_nodes_by_continuous_and_broken)/self.n_spiders 
-                +0.45*(self.n_spiders-self.current_high_degree_nodes)/self.n_spiders
-            )
-            reward = reward - self.step_penalty
+            reward = self.compute_dense_reward()
+            reward = reward - self.step_penalty - self.length_penalty*max(0, self.step_counter - 1)
             return data,mask, reward, done
     
 
     # =================Reward calculation=========================
-    def delta_left_nodes(self)->int:
-        """returns reward"""
-        return self.previous_left_nodes_by_continuous - self.current_left_nodes_by_continuous, self.previous_left_nodes_by_continuous_and_broken - self.current_left_nodes_by_continuous_and_broken
+    def compute_dense_reward(self) -> float:
+        # Your existing dense reward formula, but callable at any time
+        n = max(1, self.n_spiders)
+        return (
+            0.45*(self.n_spiders - self.current_left_nodes_by_continuous)/n
+            + 0.10*(self.n_spiders - self.current_left_nodes_by_continuous_and_broken)/n
+            + 0.45*(self.n_spiders - self.current_high_degree_nodes)/n
+        )
 
-    def delta_high_degree_nodes(self)->int:
-        """returns reward"""
-        return self.previous_high_degree_nodes - self.current_high_degree_nodes
 
     @property
     def n_spiders(self)->int:
