@@ -153,14 +153,21 @@ def run_until_done(env, net, device="cpu", sample=False, topk_to_print=5):
                 aid = int(topk.indices[rank])
                 node_idx = aid // N_NODE_ACTIONS
                 op_idx   = aid %  N_NODE_ACTIONS
-                op_name  = ["select_node","unfuse_rule","color_change_rule","split_hadamard","pi_rule"][op_idx]
+                
+                if op_idx < 2**5:
+                    op_name = "unfuse_rule" 
+                else:
+                    op_name  = ["color_change_rule","split_hadamard","pi_rule"][op_idx%(2**5)]
                 print(f"  #{rank+1}: action={aid:4d} node={node_idx:3d} op={op_name:15s} p={probs[aid].item():.4f}")
+
 
         # Decode for printing
         node_idx = a // N_NODE_ACTIONS
         op_idx   = a %  N_NODE_ACTIONS
-        op_name  = ["select_node","unfuse_rule","color_change_rule","split_hadamard","pi_rule"][op_idx]
-
+        if op_idx < 2**5:
+            op_name = "unfuse_rule" 
+        else:
+            op_name  = ["color_change_rule","split_hadamard","pi_rule"][op_idx%(2**5)]
         # Step the env
         data, mask, r, d = env.step(a)
         ep_ret += float(r); t += 1

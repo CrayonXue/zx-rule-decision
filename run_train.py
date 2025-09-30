@@ -215,7 +215,7 @@ if __name__ == "__main__":
     parser.add_argument("--vf_coef", type=float, default=0.5)
 
     # GNN model dims
-    parser.add_argument("--node_feat_dim", type=int, default=5 + 10 + 1 + 1)  # matches env x: 5+10+1+1
+    parser.add_argument("--node_feat_dim", type=int, default=5 + 10 + 1)  # matches env x: 5+10+1+1
     parser.add_argument("--emb_dim", type=int, default=256)
     parser.add_argument("--hid_dim", type=int, default=128)
 

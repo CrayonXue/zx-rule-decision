@@ -45,7 +45,7 @@ class PPOLightningGNN(pl.LightningModule):
     def __init__(
         self,
         env_fn,
-        node_feat_dim: int = 5 + 10 + 1 + 1,   # type[5] + phase[10] + selected[1] + qubit_on[1]; add degree if you include it
+        node_feat_dim: int = 5 + 10 + 1,   # type[5] + phase[10] + qubit_on[1]; add degree if you include it
         emb_dim: int = 128,
         hid_dim: int = 128,
         rollout_steps: int = 512,

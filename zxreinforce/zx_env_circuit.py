@@ -62,8 +62,8 @@ class ZXCalculus():
                 node_type = HADAMARD
                 node_phase = encode_phase(None)
             
-            select = self.selected_node[self.id2pos[int(v)]]
-            node_feasture = node_type + node_phase + [self.graph.qubit(v)] + [select] #5+10+1+1
+            
+            node_feasture = node_type + node_phase + [self.graph.qubit(v)] #5+10+1
             nodes_features.append(node_feasture)
         x = torch.tensor(nodes_features, dtype=torch.float32)
 
@@ -95,12 +95,11 @@ class ZXCalculus():
         Return new initial observation
         '''
         self.graph, _ = self.resetter.reset()
-
-        self.selected_node = np.zeros(self.n_spiders, dtype=np.int32)
         self.step_counter = 0
 
         self.current_left_nodes_by_continuous, self.current_left_nodes_by_continuous_and_broken = self.num_nodes_left
         self.current_high_degree_nodes = self.count_high_degree_nodes()
+        self.last_score = self.compute_dense_reward()
         return self.get_observation()
     
 
@@ -119,18 +118,14 @@ class ZXCalculus():
             data,mask = self.reset()
             return data,mask, 0, 1
         
-        # NEW: handle “already terminal at start of step” (including right after reset)
-        if self.is_terminal():
-            reward = self.compute_dense_reward()
-            data2, mask2 = self.reset()
-            return data2, mask2, reward, 1
-        
         else:
             # Applies the action    
-            self.apply_action(action)
-            if len(self.selected_node) != self.n_spiders:
-                raise ValueError(f"Length of selected_node {len(self.selected_node)} does not match number of spiders {self.n_spiders}")
-            data,mask = self.get_observation()
+            success = self.apply_action(action)
+            if not success:
+                # Penalize invalid or no-op actions
+                data, mask = self.get_observation()
+                return data, mask, -0.1, 0 # Small penalty, not done
+            data, mask = self.get_observation()
 
             ## Calculate the reward
             self.current_left_nodes_by_continuous, self.current_left_nodes_by_continuous_and_broken = self.num_nodes_left
@@ -140,8 +135,13 @@ class ZXCalculus():
 
             # reward = delta_left_continuous + 0.2*delta_left_cont_and_broken + self.delta_high_degree_nodes()
             # reward = -self.current_left_nodes_by_continuous - 0.2*self.current_left_nodes_by_continuous_and_broken - self.current_high_degree_nodes
-            reward = self.compute_dense_reward()
-            reward = reward - self.step_penalty - self.length_penalty*max(0, self.step_counter - 1)
+            new_score = self.compute_dense_reward()
+            reward = new_score - self.last_score
+            self.last_score = new_score  # Update the last_score for the next step
+            reward = reward - self.step_penalty # Apply penalties
+            
+            if done:
+                reward+=1
             return data,mask, reward, done
     
 
@@ -149,10 +149,14 @@ class ZXCalculus():
     def compute_dense_reward(self) -> float:
         # Your existing dense reward formula, but callable at any time
         n = max(1, self.n_spiders)
+        # return (
+        #     0.45*(self.n_spiders - self.current_left_nodes_by_continuous)/n
+        #     + 0.10*(self.n_spiders - self.current_left_nodes_by_continuous_and_broken)/n
+        #     + 0.45*(self.n_spiders - self.current_high_degree_nodes)/n
+        # )
         return (
-            0.45*(self.n_spiders - self.current_left_nodes_by_continuous)/n
-            + 0.10*(self.n_spiders - self.current_left_nodes_by_continuous_and_broken)/n
-            + 0.45*(self.n_spiders - self.current_high_degree_nodes)/n
+            0.5*(self.n_spiders - self.current_left_nodes_by_continuous)/n
+            + 0.5*(self.n_spiders - self.current_high_degree_nodes)/n
         )
 
 
@@ -202,27 +206,23 @@ class ZXCalculus():
     # ==================Actions=========================
     def apply_action(self, action:int):
         self.graph = self.graph.copy()
-        self.node_actions_fn = [self.select_node, self.unfuse_rule, self.color_change_rule, self.split_hadamard, self.pi_rule]
-        if len(self.node_actions_fn) != N_NODE_ACTIONS:
-            raise ValueError(f"Number of node actions {len(self.node_actions_fn)} does not match N_NODE_ACTIONS {N_NODE_ACTIONS}")
+        self.node_actions_fn = [self.unfuse_rule, self.color_change_rule, self.split_hadamard, self.pi_rule]
+
         if action < N_NODE_ACTIONS * self.n_spiders:
             # Action is node action
             node_idx = action//N_NODE_ACTIONS
             action_idx = action % N_NODE_ACTIONS
-            success = self.node_actions_fn[action_idx](node_idx)
+            if action_idx < 2**5:
+                success = self.unfuse_rule(node_idx,action_idx)
+            else:
+                success = self.node_actions_fn[action_idx%(2**5)+1](node_idx)
         else:
             raise ValueError(f"Action {action} not recognized")
         self.graph = self.graph.copy()
         return success
 
     # ----------------node action-----------------------
-    def select_node(self, node_idx):
-        """select one node"""
-        self.selected_node[node_idx] = 1-self.selected_node[node_idx]
-        return True
-
-
-    def unfuse_rule(self, node_idx):
+    def unfuse_rule(self, node_idx, action_idx):
         """Unfuse action"""
         v = list(self.graph.vertices())[node_idx]
         if not (self.graph.type(v) == VertexType.Z or self.graph.type(v) == VertexType.X):
@@ -232,14 +232,15 @@ class ZXCalculus():
                     phase=0,
                     qubit=self.graph.qubit(v),
                     index=child_idx)
-        self.selected_node = np.append(self.selected_node,[self.selected_node[node_idx]])
+        
         # move selected neighbours of action node to child node
         neighbours = list(self.graph.neighbors(v))
+        n=0
         for neighbor in neighbours:
-            pos = self.id2pos.get(int(neighbor), None)
-            if pos is not None and self.selected_node[pos] == 1:
+            if get_bit(action_idx, n):
                 self.graph.remove_edge((v, neighbor))
                 self.graph.add_edge((child_idx, neighbor))
+            n += 1
         self.graph.add_edge((v, child_idx))
 
         # reset graph's rows and qubits
@@ -267,7 +268,6 @@ class ZXCalculus():
         for n in neighbours:
             self.graph.remove_edge((v,n))
             h = self.graph.add_vertex(ty=VertexType.H_BOX,qubit=determine_qubit([self.graph.qubit(n),self.graph.qubit(v)]),row=determine_row([self.graph.row(n),self.graph.row(v)]))
-            self.selected_node = np.append(self.selected_node, [0])
             self.graph.add_edge((v,h))
             self.graph.add_edge((h,n))
         return True
@@ -288,19 +288,16 @@ class ZXCalculus():
         u1 = self.graph.add_vertex(ty=VertexType.X, phase=1/2, qubit=self.graph.qubit(v), row=self.graph.row(v))
         u2 = self.graph.add_vertex(ty=VertexType.Z, phase=1/2, qubit=self.graph.qubit(v), row=self.graph.row(v)+1)
         u3 = self.graph.add_vertex(ty=VertexType.X, phase=1/2, qubit=self.graph.qubit(v), row=self.graph.row(v)+2)
-        self.selected_node = np.append(self.selected_node, [self.selected_node[node_idx]]*3)
 
         self.graph.add_edge((neighbours[0], u1))
         self.graph.add_edge((neighbours[1], u3))
         self.graph.add_edge((u1, u2))
         self.graph.add_edge((u2, u3))
-        self.selected_node = np.delete(self.selected_node, self.id2pos[v])
         self.graph.remove_vertex(v)
         
         return True
 
     def pi_rule(self, node_idx):
-        old_nodes = self.n_spiders
         """node action"""
         v = list(self.graph.vertices())[node_idx]
         if (self.graph.type(v) == VertexType.Z or self.graph.type(v) == VertexType.X):
@@ -308,10 +305,7 @@ class ZXCalculus():
                 pi_commute_Z(self.graph, v)
             elif self.graph.type(v) == VertexType.X:
                 pi_commute_X(self.graph, v)
-
-            new_nodes = self.n_spiders
-            if new_nodes > old_nodes:
-                self.selected_node = np.append(self.selected_node, [0]*(new_nodes-old_nodes))
+            return True
         else:
             return False
 
@@ -319,13 +313,7 @@ class ZXCalculus():
     def fuse_rule(self, edge_idx):
         """Fuse action"""
         s,t = list(self.graph.edges())[edge_idx]
-        s_pos = self.id2pos.get(int(s), None)
-        t_pos = self.id2pos.get(int(t), None)
-        if fuse(self.graph, s, t):
-            self.selected_node = np.delete(self.selected_node, max(s_pos,t_pos))
-            return True
-        else:
-            return False
+        return fuse(self.graph, s, t)
 
     def bialgebra_rule(self, edge_idx):
         v0,v1 = list(self.graph.edges())[edge_idx]
@@ -337,19 +325,6 @@ class ZXCalculus():
         n_spiders = len(list(self.graph.vertices()))
         if (v0p == 0 and v1p == 0 and
         ((v0t == VertexType.Z and v1t == VertexType.X) or (v0t == VertexType.X and v1t == VertexType.Z))):
-            v0n = [n for n in self.graph.neighbors(v0) if not n == v1]
-            v1n = [n for n in self.graph.neighbors(v1) if not n == v0]
-            if len(v0n) >2:
-                for n in v0n[1:]:
-                    pos = self.id2pos.get(int(n), None)
-                    self.selected_node[pos] = 1
-                self.unfuse_rule(v0)
-            if len(v1n) >2:
-                for n in v1n[1:]:
-                    pos = self.id2pos.get(int(n), None)
-                    self.selected_node[pos] = 1
-                self.unfuse_rule(v1)
-
             v0n = [n for n in self.graph.neighbors(v0) if not n == v1]
             v1n = [n for n in self.graph.neighbors(v1) if not n == v0]
 
@@ -366,7 +341,6 @@ class ZXCalculus():
                 self.graph.remove_edge((v1,v11))
                 a = self.graph.add_vertex(ty=v1t, phase=0)
                 b = self.graph.add_vertex(ty=v0t, phase=0)
-                self.selected_node = np.append(self.selected_node, [0,0])
                 self.graph.add_edge((v01,a))
                 self.graph.add_edge((v11,b))
                 self.graph.add_edge((a,b))
@@ -386,24 +360,22 @@ class ZXCalculus():
             node_idx = i // N_NODE_ACTIONS
             action_idx = i % N_NODE_ACTIONS
             v = list(self.graph.vertices())[node_idx]
-            if action_idx == 0: # select_node
-                mask[i] = 1
-            elif action_idx == 1: # unfuse_rule
+            if action_idx < 2**5: # unfuse_rule
                 if self.graph.type(v) == VertexType.Z or self.graph.type(v) == VertexType.X:
                     mask[i] = 1
-            elif action_idx == 2: # color_change_rule
+            elif action_idx % 2**5== 0: # color_change_rule
                 if self.graph.type(v) == VertexType.Z or self.graph.type(v) == VertexType.X:
                     mask[i] = 1
-            elif action_idx == 3: # split_hadamard
+            elif action_idx % 2**5 == 1: # split_hadamard
                 if self.graph.type(v) == VertexType.H_BOX:
                     mask[i] = 1
-            elif action_idx == 4: # pi_rule
+            elif action_idx % 2**5== 2: # pi_rule
                 if self.graph.type(v) == VertexType.Z or self.graph.type(v) == VertexType.X:
                     mask[i] = 1
         return mask
 
 
-def save(colors:np.ndarray, angles:np.ndarray, selected_node:np.ndarray, 
+def save(colors:np.ndarray, angles:np.ndarray, 
          source:np.ndarray, target:np.ndarray, idx:int):
     """saves the current state of the environment at step idx"""
     with open(f"colors{idx}.pkl", 'wb') as f:
@@ -414,8 +386,7 @@ def save(colors:np.ndarray, angles:np.ndarray, selected_node:np.ndarray,
         pickle.dump(source, f)
     with open(f"target{idx}.pkl", 'wb') as f:
         pickle.dump(target, f)
-    with open(f"selected_node{idx}.pkl", 'wb') as f:
-        pickle.dump(selected_node, f)
+
 
 
 
@@ -496,3 +467,9 @@ def pyzx_to_pyg(zx_graph, num_qubits: int):
         edge_index = torch.tensor(edge_list, dtype=torch.long).t().contiguous()
 
     return Data(x=x, edge_index=edge_index)
+
+def get_bit(n: int, idx: int) -> int:
+    """Return the bit at index idx (LSB=0) for integer n. Works for n >= 0."""
+    if idx < 0:
+        raise ValueError("idx must be non-negative")
+    return (n >> idx) & 1

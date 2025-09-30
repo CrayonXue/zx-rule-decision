@@ -28,17 +28,17 @@ export NUMEXPR_NUM_THREADS=1
 export PYTORCH_NUM_THREADS=1
 
 # ===============================================================
-GENERATE=Fasle
-TRAIN=False # Set to True if you want to train the model, otherwise it will skip training.
-EVAL=True  # Set to True if you want to evaluate the model after training.
+GENERATE=True
+TRAIN=True # Set to True if you want to train the model, otherwise it will skip training.
+EVAL=False  # Set to True if you want to evaluate the model after training.
 
 # ===============================================================
 # ----------------------------------------------------------
 
 num_qubits_min=2
-num_qubits_max=6
-min_gates=5
-max_gates=10
+num_qubits_max=3
+min_gates=3
+max_gates=6
 p_t=0.2
 p_h=0.2
 
@@ -52,7 +52,7 @@ rollout_steps=512
 minibatch_size=128
 env_max_steps=100
 step_penalty=0.01
-length_penalty=0.01
+length_penalty=0.001
 logger_type='swanlab'
 
 data_length=10000  # Number of graphs in the graph bank pickle file.
@@ -63,7 +63,8 @@ if [ "$GENERATE" = "True" ]; then
     --num_qubits_min $num_qubits_min \
     --num_qubits_max $num_qubits_max \
     --min_gates $min_gates \
-    --max_gates $max_gates
+    --max_gates $max_gates \
+    --max_reward 0.9 
 fi
 
 

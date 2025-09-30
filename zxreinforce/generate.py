@@ -41,21 +41,49 @@ class Resetter_Circuit():
     
 
 def num_nodes_left(graph):
-        G_nx = to_networkx_graph(graph)
-        pairs = list(zip(graph.inputs(), graph.outputs()))  # fixed (si, ti)
+    G_nx = to_networkx_graph(graph)
+    pairs = list(zip(graph.inputs(), graph.outputs()))  # fixed (si, ti)
 
-        # path connecting inputs to outputs
-        continuous_paths_dict = heuristic_fixed_pairs_node_disjoint(G_nx, pairs, iterations=10, restarts=5, seed=42)
-        used_nodes = set().union(*continuous_paths_dict.values())
-        left_nodes_by_continuous = set(graph.vertices()) - used_nodes # nodes not in any continuous path
-        return len(left_nodes_by_continuous)
+    # path connecting inputs to outputs
+    continuous_paths_dict = heuristic_fixed_pairs_node_disjoint(G_nx, pairs, iterations=5, restarts=3, seed=42)
+    used_nodes = set().union(*continuous_paths_dict.values())
+    left_nodes_by_continuous = set(graph.vertices()) - used_nodes # nodes not in any continuous path
+
+    broken = broken_paths_for_unrouted_pairs(
+        G_nx, continuous_paths_dict, pairs,
+        include_endpoints_as_used=True,  # set False if endpoints of accepted paths may be reused
+        edge_cost=1e-3,                  # tie-breaker toward shorter routes
+        forbid_cost=1.0                  # cost per used (forbidden) node
+    )
+    broken_paths = []
+    for (s,t), info in broken.items():
+        broken_paths.append(sum(info["segments"], []))
+    left_nodes_by_continuous_and_broken = left_nodes_by_continuous - set().union(*broken_paths) # nodes not in any continuous or broken path
+
+    return len(left_nodes_by_continuous),len(left_nodes_by_continuous_and_broken)
+
 
 def count_high_degree_nodes(graph, degree_threshold: int = 3) -> int:
     return sum(1 for v in graph.vertices() if len(graph.neighbors(v)) > degree_threshold)
 
+
+def compute_dense_reward(graph) -> float:
+    # Your existing dense reward formula, but callable at any time
+    n_spiders = len(graph.vertices())
+    n = max(1, n_spiders)
+    current_left_nodes_by_continuous, current_left_nodes_by_continuous_and_broken = num_nodes_left(graph)
+    current_high_degree_nodes = count_high_degree_nodes(graph)
+    return (
+        0.45*(n_spiders - current_left_nodes_by_continuous)/n
+        + 0.10*(n_spiders - current_left_nodes_by_continuous_and_broken)/n
+        + 0.45*(n_spiders - current_high_degree_nodes)/n
+    )
+
+
 def graph_is_done(g: zx_copy.Graph) -> bool:
-    return (num_nodes_left(g) == 0 and count_high_degree_nodes(g) == 0)
-    
+    current_left_nodes_by_continuous, current_left_nodes_by_continuous_and_broken = num_nodes_left(g)
+    current_high_degree_nodes = count_high_degree_nodes(g)
+    return (current_left_nodes_by_continuous == 0 and current_high_degree_nodes == 0)
 
 def build_graph_bank(
     out_path: str,
@@ -66,6 +94,7 @@ def build_graph_bank(
     max_gates: int = 30,
     p_t: float = 0.2,
     p_h: float = 0.2,
+    max_reward: float = 0.9,
     seed: int = 123,
 ):
     rng = np.random.default_rng(seed)
@@ -87,7 +116,7 @@ def build_graph_bank(
         # optional: ensure any normalization you want is applied once here
         # zx_copy.full_reduce(g)  # already called in Resetter_Circuit.reset()
 
-        if graph_is_done(g):
+        if compute_dense_reward(g) > max_reward:
             continue
         kept.append(g)
         i += 1
@@ -110,6 +139,7 @@ if __name__ == "__main__":
     parser.add_argument("--max_gates", type=int, default=30)
     parser.add_argument("--p_t", type=float, default=0.2)
     parser.add_argument("--p_h", type=float, default=0.2)
+    parser.add_argument("--max_reward", type=float, default=0.9, help="Max dense reward to accept a graph into the bank.")
     parser.add_argument("--seed", type=int, default=123)
 
     args = parser.parse_args()
@@ -124,5 +154,6 @@ if __name__ == "__main__":
         max_gates=args.max_gates,
         p_t=args.p_t,
         p_h=args.p_h,
+        max_reward=args.max_reward,
         seed=args.seed,
     )

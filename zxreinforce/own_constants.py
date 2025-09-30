@@ -13,7 +13,7 @@ RED = [0,0,0,1,0]
 HADAMARD = [0,0,0,0,1]    
 
 # Number of node/edge actions
-N_NODE_ACTIONS = 5
+N_NODE_ACTIONS = 1*32+3
 N_EDGE_ACTIONS = 2
 
 
