@@ -26,15 +26,17 @@ def _worker(remote, parent_remote, env_fn_wrapper):
                 remote.send(obs)
             elif cmd == "step":
                 action = int(data)
-                data_, mask_, r, d = env.step(action)
+                data_, mask_, r, d, info = env.step(action)
                 # unify semantics: always return next obs, and if done happened, immediately reset
                 if d:
                     # for your env: time-limit path already resets inside step; success path does not.
                     # do a reset anyway to be consistent
                     data2, mask2 = env.reset()
-                    remote.send(((data2, mask2), float(r), True))
+                    # send a single tuple including info
+                    remote.send(((data2, mask2), float(r), True, info))
                 else:
-                    remote.send(((data_, mask_), float(r), False))
+                    # send a single tuple including info
+                    remote.send(((data_, mask_), float(r), False, info))
             elif cmd == "close":
                 remote.close()
                 break
@@ -68,11 +70,18 @@ class SubprocVecEnv:
         for pr, a in zip(self.parent_conns, actions):
             pr.send(("step", int(a)))
         results = [pr.recv() for pr in self.parent_conns]
-        # results: [((Data, mask), r, d), ...]
-        next_obs = [{"data": o[0], "mask": o[1]} for (o, _, _) in results]
-        rewards = np.array([r for (_, r, _) in results], dtype=np.float32)
-        dones   = np.array([d for (_, _, d) in results], dtype=np.bool_)
-        return next_obs, rewards, dones
+        # results: [((Data, mask), r, d, info), ...]
+        next_obs = [{"data": o[0], "mask": o[1]} for (o, _, _, _) in results]
+        rewards = np.array([r for (_, r, _, _) in results], dtype=np.float32)
+        dones   = np.array([d for (_, _, d, _) in results], dtype=np.bool_)
+        # be robust if keys missing in info
+        def _mk_info(info):
+            return {
+                "terminated": bool(info.get("terminated", False)) if isinstance(info, dict) else False,
+                "TimeLimit.truncated": bool(info.get("TimeLimit.truncated", False)) if isinstance(info, dict) else False,
+            }
+        infos = [_mk_info(info) for (_, _, _, info) in results]
+        return next_obs, rewards, dones, infos
 
     def close(self):
         for pr in self.parent_conns:

@@ -135,7 +135,7 @@ class PPOLightningGNN(pl.LightningModule):
     def _step_envs(self, actions: torch.Tensor):
         # actions: [B] on cuda; move to cpu ints
         a_np = actions.detach().to("cpu").numpy()
-        next_obs, rewards, dones = self.vec.step(a_np)
+        next_obs, rewards, dones, infos = self.vec.step(a_np)
         # episodic stats
         for i in range(self.num_envs):
             r, d = float(rewards[i]), bool(dones[i])
@@ -146,7 +146,7 @@ class PPOLightningGNN(pl.LightningModule):
                 self._completed_lengths.append(self._ep_len[i])
                 self._ep_ret[i] = 0.0
                 self._ep_len[i] = 0
-        return next_obs, rewards, dones
+        return next_obs, rewards, dones, infos
 
     def on_train_end(self):
         try:
@@ -155,7 +155,7 @@ class PPOLightningGNN(pl.LightningModule):
             pass
 
     def collect_rollout(self):
-        obs_buf, act_buf, logp_buf, val_buf, rew_buf, done_buf = [], [], [], [], [], []
+        obs_buf, act_buf, logp_buf, val_buf, rew_buf, done_buf, timeout_buf, terminated_buf = [], [], [], [], [], [], [], []
         for _ in range(self.rollout_steps):
             action, logp, value = self._select_action(self.obs)
             obs_buf.append(self.obs)
@@ -163,9 +163,11 @@ class PPOLightningGNN(pl.LightningModule):
             logp_buf.append(logp)
             val_buf.append(value)
     
-            self.obs, rewards, dones = self._step_envs(action)
+            self.obs, rewards, dones, infos = self._step_envs(action)
             rew_buf.append(torch.from_numpy(rewards))
             done_buf.append(torch.from_numpy(dones.astype(np.float32)))
+            timeout_buf.append(torch.tensor([int(info.get("TimeLimit.truncated", False)) for info in infos]))
+            terminated_buf.append(torch.tensor([int(info.get("terminated", False)) for info in infos]))
 
         with torch.no_grad():
             _, _, last_value = self._select_action(self.obs)  # [B]
@@ -175,22 +177,26 @@ class PPOLightningGNN(pl.LightningModule):
         val = torch.stack(val_buf).squeeze(-1)     # [T,B]
         rew = torch.stack(rew_buf)                 # [T,B]
         done = torch.stack(done_buf)               # [T,B]
-        return obs_buf, act, logp, val, rew, done, last_value.squeeze(-1)
+        timeouts = torch.stack(timeout_buf)        # [T,B]
+        terminated = torch.stack(terminated_buf)   # [T,B]
+        return obs_buf, act, logp, val, rew, done, last_value.squeeze(-1), timeouts
 
     @torch.no_grad()
-    def compute_gae(self, rewards, values, dones, last_value):
+    def compute_gae(self, rewards, values, dones, last_value,timeouts):
         # rewards/values/dones: [T,B], last_value: [B]
         device = self.device
         rewards = rewards.to(device)
         values = values.to(device)
         dones = dones.to(device)
         last_value = last_value.to(device)
+        timeouts = timeouts.to(device)
 
         T, B = rewards.shape
         adv = torch.zeros_like(rewards)
         lastgaelam = torch.zeros(B, device=device)
         for t in reversed(range(T)):
-            next_nonterminal = 1.0 - (dones[t] > 0).float()
+            real_done = (dones[t] > 0) & ~(timeouts[t] > 0) # treat timeout as nonterminal
+            next_nonterminal = 1.0 - real_done.float()
             next_values = last_value if t == T - 1 else values[t + 1]
             delta = rewards[t] + self.gamma * next_values * next_nonterminal - values[t]
             lastgaelam = delta + self.gamma * self.gae_lambda * next_nonterminal * lastgaelam
@@ -204,7 +210,7 @@ class PPOLightningGNN(pl.LightningModule):
         # 1) Rollout
         # torch.cuda.synchronize()
         # start_time = time.time()
-        obs_traj, act, logp_old, val, rew, done, last_value = self.collect_rollout()
+        obs_traj, act, logp_old, val, rew, done, last_value, timeouts = self.collect_rollout()
         # torch.cuda.synchronize()
         # end_time = time.time()
         # self.log("time/rollout", end_time - start_time, prog_bar=False, on_step=True, on_epoch=False)
@@ -215,7 +221,7 @@ class PPOLightningGNN(pl.LightningModule):
 
 
         # 2) GAE
-        adv, ret = self.compute_gae(rew.detach(), val.detach(), done.detach(), last_value.detach())
+        adv, ret = self.compute_gae(rew.detach(), val.detach(), done.detach(), last_value.detach(), timeouts.detach())
         T, B = act.shape
         total = T * B
         act = act.reshape(total).to(self.device)

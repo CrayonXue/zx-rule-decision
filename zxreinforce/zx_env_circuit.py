@@ -73,6 +73,7 @@ class ZXCalculus():
             edge_index = torch.empty((2, 0), dtype=torch.long)
         else:
             uv = [(self.id2pos[int(u)], self.id2pos[int(v)]) for u, v in edge_list]
+            uv = uv + [(v, u) for (u, v) in uv]
             edge_index = torch.tensor(uv, dtype=torch.long).t().contiguous()
 
         # Precompute feasibility mask (variable length: N*node_act + E*edge_act + 1)
@@ -98,8 +99,10 @@ class ZXCalculus():
         self.step_counter = 0
 
         self.current_left_nodes_by_continuous, self.current_left_nodes_by_continuous_and_broken = self.num_nodes_left
+        self.previous_left_nodes_by_continuous, self.previous_left_nodes_by_continuous_and_broken = self.current_left_nodes_by_continuous, self.current_left_nodes_by_continuous_and_broken
         self.current_high_degree_nodes = self.count_high_degree_nodes()
-        self.last_score = self.compute_dense_reward()
+        self.previous_high_degree_nodes = self.current_high_degree_nodes
+        # self.last_score = self.compute_dense_reward()
         return self.get_observation()
     
 
@@ -116,15 +119,12 @@ class ZXCalculus():
         if self.step_counter >= self.max_steps: 
             # Return observation and reward, end_episode
             data,mask = self.reset()
-            return data,mask, 0, 1
+            info = {"terminated": False, "TimeLimit.truncated": True}
+            return data,mask, 0, 1, info
         
         else:
             # Applies the action    
-            success = self.apply_action(action)
-            if not success:
-                # Penalize invalid or no-op actions
-                data, mask = self.get_observation()
-                return data, mask, -0.1, 0 # Small penalty, not done
+            self.apply_action(action)
             data, mask = self.get_observation()
 
             ## Calculate the reward
@@ -133,17 +133,19 @@ class ZXCalculus():
 
             done = 1 if self.is_terminal() else 0
 
-            # reward = delta_left_continuous + 0.2*delta_left_cont_and_broken + self.delta_high_degree_nodes()
+
+            reward = self.delta_left_continuous() + self.delta_left_cont_and_broken() + self.delta_high_degree_nodes()
             # reward = -self.current_left_nodes_by_continuous - 0.2*self.current_left_nodes_by_continuous_and_broken - self.current_high_degree_nodes
-            new_score = self.compute_dense_reward()
-            reward = new_score - self.last_score
-            self.last_score = new_score  # Update the last_score for the next step
+            # new_score = self.compute_dense_reward()
+            # reward = new_score - self.last_score
+            # self.last_score = new_score  # Update the last_score for the next step
             reward = reward - self.step_penalty # Apply penalties
             
             if done:
-                reward+=1
-            return data,mask, reward, done
-    
+                reward+=10
+            info = {"terminated": done, "TimeLimit.truncated": False}
+            return data, mask, reward, done, info
+
 
     # =================Reward calculation=========================
     def compute_dense_reward(self) -> float:
@@ -158,8 +160,29 @@ class ZXCalculus():
             0.5*(self.n_spiders - self.current_left_nodes_by_continuous)/n
             + 0.5*(self.n_spiders - self.current_high_degree_nodes)/n
         )
+    def delta_left_continuous(self):
+        delta = self.previous_left_nodes_by_continuous - self.current_left_nodes_by_continuous
+        self.previous_left_nodes_by_continuous = self.current_left_nodes_by_continuous
+        if delta > 0:
+            return delta
+        else:
+            return 0
 
+    def delta_left_cont_and_broken(self):
+        delta = self.previous_left_nodes_by_continuous_and_broken - self.current_left_nodes_by_continuous_and_broken
+        self.previous_left_nodes_by_continuous_and_broken = self.current_left_nodes_by_continuous_and_broken
+        if delta > 0:
+            return delta
+        else:
+            return 0
 
+    def delta_high_degree_nodes(self):
+        delta = self.previous_high_degree_nodes - self.current_high_degree_nodes
+        self.previous_high_degree_nodes = self.current_high_degree_nodes
+        if delta > 0:
+            return delta
+        else:
+            return 0
     @property
     def n_spiders(self)->int:
         """Number of nodes in diagram"""
@@ -362,7 +385,9 @@ class ZXCalculus():
             v = list(self.graph.vertices())[node_idx]
             if action_idx < 2**5: # unfuse_rule
                 if self.graph.type(v) == VertexType.Z or self.graph.type(v) == VertexType.X:
-                    mask[i] = 1
+                    num_neighbours = len(self.graph.neighbors(v))
+                    if action_idx < 2**num_neighbours:
+                        mask[i] = 1
             elif action_idx % 2**5== 0: # color_change_rule
                 if self.graph.type(v) == VertexType.Z or self.graph.type(v) == VertexType.X:
                     mask[i] = 1

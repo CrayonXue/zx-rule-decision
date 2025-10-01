@@ -28,9 +28,9 @@ export NUMEXPR_NUM_THREADS=1
 export PYTORCH_NUM_THREADS=1
 
 # ===============================================================
-GENERATE=True
-TRAIN=True # Set to True if you want to train the model, otherwise it will skip training.
-EVAL=False  # Set to True if you want to evaluate the model after training.
+GENERATE=False
+TRAIN=False # Set to True if you want to train the model, otherwise it will skip training.
+EVAL=True  # Set to True if you want to evaluate the model after training.
 
 # ===============================================================
 # ----------------------------------------------------------
@@ -44,7 +44,7 @@ p_h=0.2
 
 max_epochs=10000
 ppo_updates_per_epoch=1
-max_train_steps=100000
+max_train_steps=50000
 emb_dim=512
 hid_dim=512
 num_envs=8
@@ -97,6 +97,7 @@ fi
 ckpt="runs/ZX-PPO-GNN_nq[2-3]_gates[3-6]_envs8_T256_mb128_ppo4_lr0.0003_20250927-180908/checkpoints/last.ckpt"
 ckpt="runs/ZX-PPO-GNN_nq[5-10]_gates[10-30]_envs8_T512_mb128_ppo4_lr0.0003_20250927-194912/checkpoints/last.ckpt"
 ckpt="runs/ZX-PPO-GNN_nq[2-6]_gates[5-10]_envs8_T512_mb128_ppo4_lr0.0003_20250929-120817/checkpoints/last.ckpt"
+ckpt="runs/ZX-PPO-GNN_nq[2-3]_gates[3-6]_envs8_T512_mb128_ppo4_lr0.0003_20250930-214313/checkpoints/last.ckpt"
 if [ "$EVAL" = "True" ]; then
     python eval.py \
     --ckpt_path $ckpt \

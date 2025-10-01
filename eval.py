@@ -12,14 +12,14 @@ from zxreinforce.own_constants import N_NODE_ACTIONS  # action decoding
 
 # ----- Helpers -----
 
-NODE_ACTION_NAMES = ["select_node", "unfuse_rule", "color_change_rule", "split_hadamard", "pi_rule"]
+NODE_ACTION_NAMES = ["color_change_rule", "split_hadamard", "pi_rule"]
 
 def load_net_from_ckpt(ckpt_path, device="cpu"):
     ckpt = torch.load(ckpt_path, map_location=device)
 
     # Pull model dims from Lightning hyperparams if present
     hps = ckpt.get("hyper_parameters", {})
-    node_feat_dim = hps.get("node_feat_dim", 5 + 10 + 1 + 1)
+    node_feat_dim = hps.get("node_feat_dim", 5 + 10 + 1)
     emb_dim       = hps.get("emb_dim", 256)
     hid_dim       = hps.get("hid_dim", 128)
 
@@ -60,7 +60,10 @@ def policy_logits_on_single_graph(net, data, mask, device):
 def decode_action(a_idx: int):
     node_idx = a_idx // N_NODE_ACTIONS
     a_local  = a_idx % N_NODE_ACTIONS
-    a_name   = NODE_ACTION_NAMES[a_local] if a_local < len(NODE_ACTION_NAMES) else f"action_{a_local}"
+    if a_local < 2**5:
+        a_name = f"unfuse_rule_{a_local}"
+    else:
+        a_name = NODE_ACTION_NAMES[a_local%(2**5)]
     return node_idx, a_local, a_name
 
 def print_topk(masked_logits, probs, k=10):
@@ -106,12 +109,12 @@ def greedy_rollout(env, net, device="cpu", max_steps=50, verbose=True):
         node_idx, a_local, a_name = decode_action(a)
         if verbose:
             print(f"[t={t}] choose a={a} -> node={node_idx}, op={a_name}, p={probs[a].item():.4f}")
-        data, mask, r, d = env.step(a)
+        data, mask, r, d, info = env.step(a)
         total_r += float(r)
         t += 1
         if d:
             if verbose:
-                print(f"Done at t={t}, return={total_r:.3f}")
+                print(f"Done at t={t}, return={total_r:.3f}, timeout={info.get('TimeLimit.truncated', False)}")
             break
     return total_r, t
 
@@ -169,9 +172,9 @@ def run_until_done(env, net, device="cpu", sample=False, topk_to_print=5):
         else:
             op_name  = ["color_change_rule","split_hadamard","pi_rule"][op_idx%(2**5)]
         # Step the env
-        data, mask, r, d = env.step(a)
+        data, mask, r, d, info = env.step(a)
         ep_ret += float(r); t += 1
-        print(f"[t={t:3d}] action={a:4d} node={node_idx:3d} op={op_name:15s} reward={r:.3f} done={bool(d)}")
+        print(f"[t={t:3d}] action={a:4d} node={node_idx:3d} op={op_name:15s} reward={r:.3f} done={bool(d)} timeout={info.get('TimeLimit.truncated', False)}")
 
         if d:
             print(f"Episode finished after {t} steps, return={ep_ret:.3f}")
