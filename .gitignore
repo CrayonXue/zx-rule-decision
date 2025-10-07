@@ -1,5 +1,7 @@
 # Exclude training runs (TensorBoard logs, checkpoints, etc.)
 runs/
 run_out/
+data/
+
 *.err
 *.out

@@ -35,7 +35,7 @@ class Resetter_Circuit():
         n_qubits = self.rng.integers(low=self.num_qubits_min, high=self.num_qubits_max+1)
         n_gates = self.rng.integers(low=self.min_gates, high=self.max_gates+1)
         self.circuit: zx_copy.Circuit = zx_copy.generate.CNOT_HAD_PHASE_circuit(n_qubits, n_gates, p_had=self.p_h, p_t=self.p_t)
-        self.graph: zx_copy.Graph = self.circuit.to_graph().copy()
+        self.graph: zx_copy.Graph = self.circuit.to_graph()
         zx_copy.full_reduce(self.graph)
         return self.graph, self.circuit
     
@@ -87,6 +87,7 @@ def graph_is_done(g: zx_copy.Graph) -> bool:
 
 def build_graph_bank(
     out_path: str,
+    circuits_out_path: Optional[str] = None,
     keep_limit: int = 1000,
     num_qubits_min: int = 2,
     num_qubits_max: int = 6,
@@ -109,16 +110,17 @@ def build_graph_bank(
     )
 
     kept = []
+    circuits = []
     i=0
     while i < keep_limit:
-        g, c = resetter.reset()          # pyzx graph + circuit
-        g = g.copy()                     # defensive copy
+        g, c = resetter.reset()          # pyzx graph + circuit    
         # optional: ensure any normalization you want is applied once here
         # zx_copy.full_reduce(g)  # already called in Resetter_Circuit.reset()
 
         if compute_dense_reward(g) > max_reward:
             continue
         kept.append(g)
+        circuits.append(c)
         i += 1
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
@@ -126,6 +128,15 @@ def build_graph_bank(
         # Highest protocol for speed and compactness
         pickle.dump(kept, f, protocol=pickle.HIGHEST_PROTOCOL)
     print(f"Saved {len(kept)} graphs to {out_path}")
+
+    # Derive circuits path if not provided
+    if circuits_out_path is None:
+        base, ext = os.path.splitext(out_path)
+        circuits_out_path = base + "_circuits" + (ext if ext else ".pkl")
+    os.makedirs(os.path.dirname(circuits_out_path) or ".", exist_ok=True)
+    with open(circuits_out_path, "wb") as f:
+        pickle.dump(circuits, f, protocol=pickle.HIGHEST_PROTOCOL)
+    print(f"Saved {len(circuits)} circuits to {circuits_out_path}")
 
 if __name__ == "__main__":
     import argparse
@@ -142,9 +153,12 @@ if __name__ == "__main__":
     parser.add_argument("--max_reward", type=float, default=0.9, help="Max dense reward to accept a graph into the bank.")
     parser.add_argument("--seed", type=int, default=123)
 
+
     args = parser.parse_args()
-    exp_name = f"GraphBank_nq[{args.num_qubits_min}-{args.num_qubits_max}]_gates[{args.min_gates}-{args.max_gates}]_length{args.keep_limit}.pkl"
-    out_path = os.path.join(args.out_path, exp_name)
+    exp_name = f"GraphBank_nq[{args.num_qubits_min}-{args.num_qubits_max}]_gates[{args.min_gates}-{args.max_gates}]_length{args.keep_limit}"
+    
+    out_path = os.path.join(args.out_path, f"{exp_name}.pkl")
+    circuits_out_path = os.path.join(args.out_path, f"{exp_name}_circuits.pkl")
     build_graph_bank(
         out_path=out_path,
         keep_limit=args.keep_limit,
@@ -156,4 +170,5 @@ if __name__ == "__main__":
         p_h=args.p_h,
         max_reward=args.max_reward,
         seed=args.seed,
+        circuits_out_path=circuits_out_path,
     )

@@ -39,13 +39,28 @@ class ZXCalculus():
         self.step_penalty = step_penalty
         self.length_penalty = length_penalty
 
- 
+
+    def _rebuild_order_cache(self):
+        self.graph.my_normalize()  # rearrange nodes position(qubit, row) in the graph
+        # vertices
+        verts = sorted(self.graph.vertices(),
+        key=lambda v: (self.graph.qubit(v), self.graph.row(v), int(v)))
+        self._verts = verts
+        self._id2pos = {int(v): i for i, v in enumerate(verts)}
+
+        # neighbors (sorted once per vertex)
+        self._nbrs = {}
+        for v in verts:
+            nbrs = list(self.graph.neighbors(v))
+            nbrs.sort(key=lambda n: (self.graph.qubit(n), self.graph.row(n), int(n)))
+            self._nbrs[v] = nbrs
 
     def get_observation(self)-> tuple:
         """ observation
         Get data,mask from the environment's graph"""
         nodes_features = []
-        for v in self.graph.vertices():
+        verts = self._verts
+        for v in verts:
             if v in self.graph.inputs():
                 node_type = INPUT
                 node_phase = encode_phase(None)
@@ -67,12 +82,14 @@ class ZXCalculus():
             nodes_features.append(node_feasture)
         x = torch.tensor(nodes_features, dtype=torch.float32)
 
+
+        id2pos = self._id2pos
         edge_list = list(self.graph.edges())
 
         if not edge_list:
             edge_index = torch.empty((2, 0), dtype=torch.long)
         else:
-            uv = [(self.id2pos[int(u)], self.id2pos[int(v)]) for u, v in edge_list]
+            uv = [(id2pos[int(u)], id2pos[int(v)]) for u, v in edge_list]
             uv = uv + [(v, u) for (u, v) in uv]
             edge_index = torch.tensor(uv, dtype=torch.long).t().contiguous()
 
@@ -95,7 +112,9 @@ class ZXCalculus():
         2. Set the step counter to zero.
         Return new initial observation
         '''
+        
         self.graph, _ = self.resetter.reset()
+        self._rebuild_order_cache()
         self.step_counter = 0
 
         self.current_left_nodes_by_continuous, self.current_left_nodes_by_continuous_and_broken = self.num_nodes_left
@@ -114,7 +133,7 @@ class ZXCalculus():
 
         ## Add the step counter for stopping criteria
         self.step_counter += 1
-        self.graph = self.graph.copy()
+        # self.graph = self.graph.copy()
         # Check if trajectory is over
         if self.step_counter >= self.max_steps: 
             # Return observation and reward, end_episode
@@ -125,6 +144,7 @@ class ZXCalculus():
         else:
             # Applies the action    
             self.apply_action(action)
+            self._rebuild_order_cache()
             data, mask = self.get_observation()
 
             ## Calculate the reward
@@ -133,7 +153,7 @@ class ZXCalculus():
 
             done = 1 if self.is_terminal() else 0
 
-
+            
             reward = self.delta_left_continuous() + self.delta_left_cont_and_broken() + self.delta_high_degree_nodes()
             # reward = -self.current_left_nodes_by_continuous - 0.2*self.current_left_nodes_by_continuous_and_broken - self.current_high_degree_nodes
             # new_score = self.compute_dense_reward()
@@ -163,30 +183,33 @@ class ZXCalculus():
     def delta_left_continuous(self):
         delta = self.previous_left_nodes_by_continuous - self.current_left_nodes_by_continuous
         self.previous_left_nodes_by_continuous = self.current_left_nodes_by_continuous
-        if delta > 0:
-            return delta
-        else:
-            return 0
+        # if delta > 0:
+        #     return delta
+        # else:
+        #     return 0
+        return delta
 
     def delta_left_cont_and_broken(self):
         delta = self.previous_left_nodes_by_continuous_and_broken - self.current_left_nodes_by_continuous_and_broken
         self.previous_left_nodes_by_continuous_and_broken = self.current_left_nodes_by_continuous_and_broken
-        if delta > 0:
-            return delta
-        else:
-            return 0
+        # if delta > 0:
+        #     return delta
+        # else:
+        #     return 0
+        return delta
 
     def delta_high_degree_nodes(self):
         delta = self.previous_high_degree_nodes - self.current_high_degree_nodes
         self.previous_high_degree_nodes = self.current_high_degree_nodes
-        if delta > 0:
-            return delta
-        else:
-            return 0
+        # if delta > 0:
+        #     return delta
+        # else:
+        #     return 0
+        return delta
     @property
     def n_spiders(self)->int:
         """Number of nodes in diagram"""
-        return len(self.graph.vertices())
+        return len(self._verts)
     
     @property
     def n_edges(self):
@@ -195,10 +218,10 @@ class ZXCalculus():
 
     @property
     def id2pos(self):
-        return {int(v_id): i for i, v_id in enumerate(self.graph.vertices())}
+        return {int(v_id): i for i, v_id in enumerate(self._verts)}
 
     def count_high_degree_nodes(self, degree_threshold: int = 3) -> int:
-        return sum(1 for v in self.graph.vertices() if len(self.graph.neighbors(v)) > degree_threshold)
+        return sum(1 for v in self._verts if len(self._nbrs[v]) > degree_threshold)
 
 
     @property
@@ -226,68 +249,73 @@ class ZXCalculus():
         return len(left_nodes_by_continuous),len(left_nodes_by_continuous_and_broken)
 
 
+
+    def ordered_vertices(self):
+        # Use a persistent, deterministic order for vertices
+        # Prefer integer ID if stable; otherwise sort by (qubit, row, id)
+        return sorted(self.graph.vertices(), key=lambda v: (self.graph.qubit(v), self.graph.row(v), int(v)))
+
+    def ordered_neighbors(self, v):
+        nbrs = list(self.graph.neighbors(v))
+        nbrs.sort(key=lambda n: (self.graph.qubit(n), self.graph.row(n), int(n)))
+        return nbrs
+
     # ==================Actions=========================
     def apply_action(self, action:int):
-        self.graph = self.graph.copy()
+        # self.graph = self.graph.copy()
         self.node_actions_fn = [self.unfuse_rule, self.color_change_rule, self.split_hadamard, self.pi_rule]
 
         if action < N_NODE_ACTIONS * self.n_spiders:
             # Action is node action
-            node_idx = action//N_NODE_ACTIONS
+            node_pos = action//N_NODE_ACTIONS
             action_idx = action % N_NODE_ACTIONS
             if action_idx < 2**5:
-                success = self.unfuse_rule(node_idx,action_idx)
+                success = self.unfuse_rule(node_pos,action_idx)
             else:
-                success = self.node_actions_fn[action_idx%(2**5)+1](node_idx)
+                success = self.node_actions_fn[action_idx%(2**5)+1](node_pos)
         else:
             raise ValueError(f"Action {action} not recognized")
-        self.graph = self.graph.copy()
+        # self.graph = self.graph.copy()
         return success
 
     # ----------------node action-----------------------
-    def unfuse_rule(self, node_idx, action_idx):
+    def unfuse_rule(self, node_pos, action_idx):
         """Unfuse action"""
-        v = list(self.graph.vertices())[node_idx]
-        if not (self.graph.type(v) == VertexType.Z or self.graph.type(v) == VertexType.X):
+        v = self._verts[node_pos]
+        if self.graph.type(v) not in (VertexType.Z, VertexType.X):
             return False
-        child_idx = len(self.graph.vertices())
-        self.graph.add_vertex(ty=self.graph.type(v), 
-                    phase=0,
-                    qubit=self.graph.qubit(v),
-                    index=child_idx)
+        nbrs = self._nbrs[v]
+        k = min(len(nbrs), 5)
+        if action_idx >= (1 << k):
+            return False
         
-        # move selected neighbours of action node to child node
-        neighbours = list(self.graph.neighbors(v))
-        n=0
-        for neighbor in neighbours:
-            if get_bit(action_idx, n):
-                self.graph.remove_edge((v, neighbor))
-                self.graph.add_edge((child_idx, neighbor))
-            n += 1
-        self.graph.add_edge((v, child_idx))
+        child = self.graph.add_vertex(ty=self.graph.type(v), phase=0, qubit=self.graph.qubit(v))
 
-        # reset graph's rows and qubits
-        child_neighbors = list(self.graph.neighbors(child_idx))
-        neighbor_qubit = [self.graph.qubit(child_neighbors[i]) for i in range(len(child_neighbors))]
-        neighbor_row = [self.graph.row(child_neighbors[i]) for i in range(len(child_neighbors))]
-        child_qubit = determine_qubit(neighbor_qubit)
-        child_row = determine_row(neighbor_row)
-        self.graph.set_qubit(child_idx, child_qubit)
-        self.graph.set_row(child_idx, child_row)
-        # move all rows >= child_row up by 1
-        for v in self.graph.vertices():
-            if self.graph.row(v) >= child_row and v != child_idx:
-                self.graph.set_row(v, self.graph.row(v)+1)
+        # Move first-k neighbors according to bits
+        for bit, n in enumerate(nbrs[:k]):
+            if get_bit(action_idx, bit):
+                self.graph.remove_edge((v, n))
+                self.graph.add_edge((child, n))
+        self.graph.add_edge((v, child))
+
+
+        # Update child attrs deterministically
+        child_nbrs = list(self.graph.neighbors(child))  # unsorted OK for qubit/row aggregation
+        neighbor_qubit = [self.graph.qubit(u) for u in child_nbrs]
+        neighbor_row   = [self.graph.row(u) for u in child_nbrs]
+        self.graph.set_qubit(child, determine_qubit(neighbor_qubit))
+        self.graph.set_row(child,   determine_row(neighbor_row))
+
         return True
 
 
 
-    def color_change_rule(self, node_idx):
-        v = list(self.graph.vertices())[node_idx]
+    def color_change_rule(self, node_pos):
+        v = self._verts[node_pos]
         if not (self.graph.type(v) == VertexType.Z or self.graph.type(v) == VertexType.X):
             return False
         self.graph.set_type(v, toggle_vertex(self.graph.type(v)))
-        neighbours = list(self.graph.neighbors(v))
+        neighbours = self._nbrs[v]
         for n in neighbours:
             self.graph.remove_edge((v,n))
             h = self.graph.add_vertex(ty=VertexType.H_BOX,qubit=determine_qubit([self.graph.qubit(n),self.graph.qubit(v)]),row=determine_row([self.graph.row(n),self.graph.row(v)]))
@@ -298,14 +326,14 @@ class ZXCalculus():
     def split_hadamard(self, node_idx):
         """Hadamard unfuse action"""
         # Change middle node
-        v = list(self.graph.vertices())[node_idx]
+        v = self._verts[node_idx]
         if self.graph.type(v) != VertexType.H_BOX:
             return False
-        neighbours = list(self.graph.neighbors(v))
+        neighbours = self._nbrs[v]
         if len(neighbours) != 2:
             raise ValueError(f"Hadamard node v={v} requires exactly two neighbors.")
 
-        for w in self.graph.vertices():
+        for w in self._verts:
             if self.graph.row(w) >= self.graph.row(v) and w != v:
                 self.graph.set_row(w, self.graph.row(w)+3)
         u1 = self.graph.add_vertex(ty=VertexType.X, phase=1/2, qubit=self.graph.qubit(v), row=self.graph.row(v))
@@ -322,7 +350,7 @@ class ZXCalculus():
 
     def pi_rule(self, node_idx):
         """node action"""
-        v = list(self.graph.vertices())[node_idx]
+        v = self._verts[node_idx]
         if (self.graph.type(v) == VertexType.Z or self.graph.type(v) == VertexType.X):
             if self.graph.type(v) == VertexType.Z:
                 pi_commute_Z(self.graph, v)
@@ -345,11 +373,10 @@ class ZXCalculus():
         v1t = self.graph.type(v1)
         v0p = self.graph.phase(v0)
         v1p = self.graph.phase(v1)
-        n_spiders = len(list(self.graph.vertices()))
         if (v0p == 0 and v1p == 0 and
         ((v0t == VertexType.Z and v1t == VertexType.X) or (v0t == VertexType.X and v1t == VertexType.Z))):
-            v0n = [n for n in self.graph.neighbors(v0) if not n == v1]
-            v1n = [n for n in self.graph.neighbors(v1) if not n == v0]
+            v0n = [n for n in self._nbrs[v0] if not n == v1]
+            v1n = [n for n in self._nbrs[v1] if not n == v0]
 
             if (len(v0n) == 2 and len(v1n) == 2 and
                 self.graph.num_edges(v0, v1) == 1 and # there is exactly one edge between v0 and v1
@@ -377,27 +404,27 @@ class ZXCalculus():
 
     # ==================Action mask=========================
     def get_action_mask(self) -> np.ndarray:
-        cut = N_NODE_ACTIONS*self.n_spiders  
-        mask = np.zeros(cut, dtype=np.int32)
-        for i in range(cut):
-            node_idx = i // N_NODE_ACTIONS
-            action_idx = i % N_NODE_ACTIONS
-            v = list(self.graph.vertices())[node_idx]
-            if action_idx < 2**5: # unfuse_rule
-                if self.graph.type(v) == VertexType.Z or self.graph.type(v) == VertexType.X:
-                    num_neighbours = len(self.graph.neighbors(v))
-                    if action_idx < 2**num_neighbours:
-                        mask[i] = 1
-            elif action_idx % 2**5== 0: # color_change_rule
-                if self.graph.type(v) == VertexType.Z or self.graph.type(v) == VertexType.X:
-                    mask[i] = 1
-            elif action_idx % 2**5 == 1: # split_hadamard
-                if self.graph.type(v) == VertexType.H_BOX:
-                    mask[i] = 1
-            elif action_idx % 2**5== 2: # pi_rule
-                if self.graph.type(v) == VertexType.Z or self.graph.type(v) == VertexType.X:
-                    mask[i] = 1
+        N = len(self._verts)
+        mask = np.zeros(N_NODE_ACTIONS * N, dtype=np.int32)
+
+        UNFUSE_SPACE = 1 << 5  # 32
+        COLOR_OFFSET = UNFUSE_SPACE + 0
+        SPLIT_OFFSET = UNFUSE_SPACE + 1
+        PI_OFFSET    = UNFUSE_SPACE + 2
+        # assert N_NODE_ACTIONS == UNFUSE_SPACE + 3
+
+        for i, v in enumerate(self._verts):
+            base = i * N_NODE_ACTIONS
+            deg = len(self._nbrs[v])
+            if self.graph.type(v) in (VertexType.Z, VertexType.X):
+                k = min(deg, 5)
+                mask[base : base + (1 << k)] = 1  # contiguous block for unfuse patterns
+                mask[base + COLOR_OFFSET] = 1
+                mask[base + PI_OFFSET] = 1
+            elif self.graph.type(v) == VertexType.H_BOX:
+                mask[base + SPLIT_OFFSET] = 1
         return mask
+
 
 
 def save(colors:np.ndarray, angles:np.ndarray, 
@@ -431,11 +458,10 @@ def determine_qubit(neighbor_qubit:List[int]) -> int:
     If all neighbors are on the same qubit, return that qubit.
     If neighbors are on different qubits, return None (indicating ambiguity).
     """
-    counts = Counter(neighbor_qubit)
-    max_freq = max(counts.values())
-    candidates = [item for item, freq in counts.items() if freq == max_freq]
-    chosen_qubit = np.random.choice(candidates)
-    return chosen_qubit
+    c = Counter(neighbor_qubit)
+    maxf = max(c.values())
+    return int(min(q for q, f in c.items() if f == maxf))
+
 
 def determine_row(neighbor_row:List[int]) -> int:
     """Determine the row for the new child node based on its neighbors' rows.
@@ -498,3 +524,4 @@ def get_bit(n: int, idx: int) -> int:
     if idx < 0:
         raise ValueError("idx must be non-negative")
     return (n >> idx) & 1
+
