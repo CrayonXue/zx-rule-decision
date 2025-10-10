@@ -14,8 +14,13 @@ from .own_constants import N_NODE_ACTIONS, N_EDGE_ACTIONS
 from .subproc_vec_env import SubprocVecEnv
 
 def masked_categorical(logits: torch.Tensor, mask: torch.Tensor, neg_large: float = -1e4) -> Categorical:
-    # logits, mask: [B, A]
-    logits = logits.masked_fill(mask == 0, neg_large)
+    # logits, mask: [B, A] 
+    invalid = (mask.sum(dim=1) == 0)
+    if invalid.any():
+        # ensure at least one valid action
+        mask = mask.clone()
+        mask[invalid, 0] = True
+    logits = logits.masked_fill(~mask, neg_large)
     return Categorical(logits=logits)
 
 

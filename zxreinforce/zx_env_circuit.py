@@ -1,20 +1,21 @@
 
 # This file contains the ZXCalculus environment class and functions to apply actions to the diagram
-import copy
+
 import pickle
-
 import numpy as np
+from collections import Counter
+from typing import List
+import numpy as np
+import torch 
+from torch_geometric.data import Data
 
-from collections import deque
 
-from .own_constants import (INPUT, OUTPUT, GREEN, RED, HADAMARD, N_NODE_ACTIONS, N_EDGE_ACTIONS, encode_phase)
 
 import sys
 sys.path.append('../pyzx_copy')
-import pyzx_copy as zx_copy
-from pyzx_copy.utils import VertexType, toggle_vertex
-from pyzx_copy.utils import heuristic_fixed_pairs_node_disjoint, broken_paths_for_unrouted_pairs, to_networkx_graph
+from pyzx_copy.utils import VertexType, toggle_vertex, heuristic_fixed_pairs_node_disjoint, broken_paths_for_unrouted_pairs, to_networkx_graph
 from pyzx_copy.basicrules import pi_commute_Z,pi_commute_X,fuse
+from .own_constants import (INPUT, OUTPUT, GREEN, RED, HADAMARD, N_NODE_ACTIONS, N_EDGE_ACTIONS, encode_phase)
 
 class ZXCalculus():
     """Class for single ZX-calculus environment"""
@@ -43,17 +44,26 @@ class ZXCalculus():
     def _rebuild_order_cache(self):
         self.graph.my_normalize()  # rearrange nodes position(qubit, row) in the graph
         # vertices
-        verts = sorted(self.graph.vertices(),
-        key=lambda v: (self.graph.qubit(v), self.graph.row(v), int(v)))
+        verts = sorted(map(int, self.graph.vertices()),
+                        key=lambda v: (self.graph.qubit(v), self.graph.row(v), int(v)))
         self._verts = verts
         self._id2pos = {int(v): i for i, v in enumerate(verts)}
 
         # neighbors (sorted once per vertex)
         self._nbrs = {}
         for v in verts:
-            nbrs = list(self.graph.neighbors(v))
+            nbrs = list(map(int, self.graph.neighbors(v)))
             nbrs.sort(key=lambda n: (self.graph.qubit(n), self.graph.row(n), int(n)))
             self._nbrs[v] = nbrs
+
+        # edges
+        E = []
+        for (u, v) in self.graph.edges():
+            u, v = int(u), int(v)
+            if u == v: continue
+            a, b = (u, v) if self._id2pos[u] < self._id2pos[v] else (v, u)
+            E.append((a, b))
+        self._edges = sorted(set(E), key=lambda p: (self._id2pos[p[0]], self._id2pos[p[1]]))
 
     def get_observation(self)-> tuple:
         """ observation
@@ -84,7 +94,7 @@ class ZXCalculus():
 
 
         id2pos = self._id2pos
-        edge_list = list(self.graph.edges())
+        edge_list = self._edges
 
         if not edge_list:
             edge_index = torch.empty((2, 0), dtype=torch.long)
@@ -113,7 +123,7 @@ class ZXCalculus():
         Return new initial observation
         '''
         
-        self.graph, _ = self.resetter.reset()
+        self.graph, self.circuit = self.resetter.reset()
         self._rebuild_order_cache()
         self.step_counter = 0
 
@@ -160,9 +170,11 @@ class ZXCalculus():
             # reward = new_score - self.last_score
             # self.last_score = new_score  # Update the last_score for the next step
             reward = reward - self.step_penalty # Apply penalties
+            reward = reward - 0.001* sum([d for d in self.nodes_degrees if d > 2]) # degree penalty + node count penalty
             
             if done:
                 reward+=10
+                reward-=0.005*len([d for d in self.nodes_degrees if d > 2]) # degree penalty + CNOT count penalty
             info = {"terminated": done, "TimeLimit.truncated": False}
             return data, mask, reward, done, info
 
@@ -223,6 +235,9 @@ class ZXCalculus():
     def count_high_degree_nodes(self, degree_threshold: int = 3) -> int:
         return sum(1 for v in self._verts if len(self._nbrs[v]) > degree_threshold)
 
+    @property
+    def nodes_degrees(self):
+        return [len(self._nbrs[v]) for v in self._verts]
 
     @property
     def num_nodes_left(self):
@@ -262,21 +277,37 @@ class ZXCalculus():
 
     # ==================Actions=========================
     def apply_action(self, action:int):
-        # self.graph = self.graph.copy()
-        self.node_actions_fn = [self.unfuse_rule, self.color_change_rule, self.split_hadamard, self.pi_rule]
+        N = len(self._verts)
+        UNFUSE_SPACE = 1 << 5  # 32
+        COLOR_OFFSET = UNFUSE_SPACE + 0
+        SPLIT_OFFSET = UNFUSE_SPACE + 1
+        PI_OFFSET    = UNFUSE_SPACE + 2
+        assert N_NODE_ACTIONS == UNFUSE_SPACE + 3, "Update offsets if you add actions."
 
-        if action < N_NODE_ACTIONS * self.n_spiders:
-            # Action is node action
-            node_pos = action//N_NODE_ACTIONS
-            action_idx = action % N_NODE_ACTIONS
-            if action_idx < 2**5:
-                success = self.unfuse_rule(node_pos,action_idx)
+        if action < N * N_NODE_ACTIONS:
+            node_pos = action // N_NODE_ACTIONS
+            a = action % N_NODE_ACTIONS
+            if a < UNFUSE_SPACE:
+                return self.unfuse_rule(node_pos, a)
+            elif a == COLOR_OFFSET:
+                return self.color_change_rule(node_pos)
+            elif a == SPLIT_OFFSET:
+                return self.split_hadamard(node_pos)
+            elif a == PI_OFFSET:
+                return self.pi_rule(node_pos)
             else:
-                success = self.node_actions_fn[action_idx%(2**5)+1](node_pos)
+                return False
         else:
-            raise ValueError(f"Action {action} not recognized")
-        # self.graph = self.graph.copy()
-        return success
+            if N_EDGE_ACTIONS > 0:
+                ea = action - N * N_NODE_ACTIONS
+                edge_pos = ea // N_EDGE_ACTIONS
+                edge_action = ea % N_EDGE_ACTIONS
+                if edge_pos >= len(self._edges):
+                    return False
+                return [self.fuse_rule, self.bialgebra_rule][edge_action](edge_pos)
+            else:
+                return False
+
 
     # ----------------node action-----------------------
     def unfuse_rule(self, node_pos, action_idx):
@@ -363,11 +394,11 @@ class ZXCalculus():
     # ----------------edge action-----------------------
     def fuse_rule(self, edge_idx):
         """Fuse action"""
-        s,t = list(self.graph.edges())[edge_idx]
+        s,t = self._edges[edge_idx]
         return fuse(self.graph, s, t)
 
     def bialgebra_rule(self, edge_idx):
-        v0,v1 = list(self.graph.edges())[edge_idx]
+        v0,v1 = self._edges[edge_idx]
 
         v0t = self.graph.type(v0)
         v1t = self.graph.type(v1)
@@ -405,8 +436,11 @@ class ZXCalculus():
     # ==================Action mask=========================
     def get_action_mask(self) -> np.ndarray:
         N = len(self._verts)
-        mask = np.zeros(N_NODE_ACTIONS * N, dtype=np.int32)
+        E = len(self._edges)
+        total = N * N_NODE_ACTIONS + E * N_EDGE_ACTIONS
+        mask = np.zeros(total, dtype=np.int32)
 
+        # node actions
         UNFUSE_SPACE = 1 << 5  # 32
         COLOR_OFFSET = UNFUSE_SPACE + 0
         SPLIT_OFFSET = UNFUSE_SPACE + 1
@@ -423,6 +457,28 @@ class ZXCalculus():
                 mask[base + PI_OFFSET] = 1
             elif self.graph.type(v) == VertexType.H_BOX:
                 mask[base + SPLIT_OFFSET] = 1
+
+        # edge actions
+        # simple, conservative preconditions to avoid calling heavy checks every step
+        # fuse valid when endpoints have same type (Z-Z or X-X)
+        # bialgebra valid when types differ (Z-X or X-Z) and phases are 0
+        node_type = {int(v): self.graph.type(v) for v in self._verts}
+        node_phase = {int(v): self.graph.phase(v) for v in self._verts}      
+        node_nbr = {int(v): len(self._nbrs[v]) for v in self._verts}      
+
+        if N_EDGE_ACTIONS != 0:
+            for e_idx, (u, v) in enumerate(self._edges):
+                off = N * N_NODE_ACTIONS + e_idx * N_EDGE_ACTIONS
+                tu, tv = node_type[u], node_type[v]
+                pu, pv = node_phase[u], node_phase[v]
+                du, dv = node_nbr[u], node_nbr[v]
+                # fuse
+                if (tu == tv) and (tu in (VertexType.Z, VertexType.X)):
+                    mask[off + 0] = 1
+                # bialgebra (cheap gatekeeper; full validity still checked inside rule)
+                if ((tu, tv) in ((VertexType.Z, VertexType.X), (VertexType.X, VertexType.Z))) and (pu == 0) and (pv == 0) and (du == 3) and (dv == 3):
+                    mask[off + 1] = 1
+
         return mask
 
 
@@ -446,11 +502,7 @@ def save(colors:np.ndarray, angles:np.ndarray,
 #Actions--------------------------------------------------------------------------------------------
 
 
-from collections import Counter
-from typing import List
-import numpy as np
-import torch 
-from torch_geometric.data import Data
+
 
 def determine_qubit(neighbor_qubit:List[int]) -> int:
     """Determine the qubit for the new child node based on its neighbors' qubits.
@@ -470,54 +522,6 @@ def determine_row(neighbor_row:List[int]) -> int:
     """
     return max(neighbor_row)
 
-def pyzx_to_pyg(zx_graph, num_qubits: int):
-    """
-    Encode qubit number index in the node feature for boundary vertex
-    """
-    node_features = []
-    vertices = sorted(list(zx_graph.vertices()))
-    
-    inputs = zx_graph.inputs()
-    outputs = zx_graph.outputs()
-    
-    # Acquiring qubit index for each boundary vertex
-    # from PyZX
-    input_q_map = {v: zx_graph.qubit(v) for v in inputs}
-    output_q_map = {v: zx_graph.qubit(v) for v in outputs}
-    
-    boundary_feature_dim = 2 * num_qubits + 1
-    
-    for v in vertices:
-        # Spider type (Z/X) - [2]
-        stype = zx_graph.type(v)
-        type_encoding = [1.0, 0.0] if stype == VertexType.Z else [0.0, 1.0]
-
-        # Boundary and position encoding - [2 * N_qubits + 1]
-        boundary_encoding = [0.0] * boundary_feature_dim
-        if v in inputs:
-            q_idx = input_q_map[v]
-            boundary_encoding[q_idx] = 1.0
-        elif v in outputs:
-            q_idx = output_q_map[v]
-            boundary_encoding[num_qubits + q_idx] = 1.0
-        else: # Internal node
-            boundary_encoding[-1] = 1.0
-
-        # Phase encoding (sin/cos) - [2]
-        phase = float(zx_graph.phase(v)) * np.pi
-        phase_encoding = [np.sin(phase), np.cos(phase)]
-        
-        node_features.append(type_encoding + boundary_encoding + phase_encoding)
-
-    x = torch.tensor(node_features, dtype=torch.float)
-
-    edge_list = list(zx_graph.edges())
-    if not edge_list:
-        edge_index = torch.empty((2, 0), dtype=torch.long)
-    else:
-        edge_index = torch.tensor(edge_list, dtype=torch.long).t().contiguous()
-
-    return Data(x=x, edge_index=edge_index)
 
 def get_bit(n: int, idx: int) -> int:
     """Return the bit at index idx (LSB=0) for integer n. Works for n >= 0."""

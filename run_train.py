@@ -41,7 +41,7 @@ class StepsDataset(torch.utils.data.Dataset):
 def build_env_fn(args):
     """Factory returning a fresh environment instance each time it's called."""
     def make_env():
-        exp_name = f"GraphBank_nq[{args.num_qubits_min}-{args.num_qubits_max}]_gates[{args.min_gates}-{args.max_gates}]_length{args.data_length}.pkl"
+        exp_name = f"GraphBank_nq[{args.num_qubits_min}-{args.num_qubits_max}]_gates[{args.min_gates}-{args.max_gates}]_length{args.data_length}"
         bank_path = os.path.join(args.data_dir, exp_name)
         resetter = Resetter_GraphBank(
             bank_path=bank_path,

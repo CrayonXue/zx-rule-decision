@@ -28,7 +28,7 @@ export NUMEXPR_NUM_THREADS=1
 export PYTORCH_NUM_THREADS=1
 
 # ===============================================================
-GENERATE=True
+GENERATE=False
 TRAIN=True # Set to True if you want to train the model, otherwise it will skip training.
 EVAL=False  # Set to True if you want to evaluate the model after training.
 
@@ -39,12 +39,12 @@ num_qubits_min=5
 num_qubits_max=10
 min_gates=10
 max_gates=20
-p_t=0.2
+p_t=0.2 
 p_h=0.2
 
 max_epochs=10000
 ppo_updates_per_epoch=1
-max_train_steps=100000
+max_train_steps=50000
 emb_dim=512
 hid_dim=512
 num_envs=8
