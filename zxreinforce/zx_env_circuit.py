@@ -15,7 +15,7 @@ import sys
 sys.path.append('../pyzx_copy')
 from pyzx_copy.utils import VertexType, toggle_vertex, heuristic_fixed_pairs_node_disjoint, broken_paths_for_unrouted_pairs, to_networkx_graph
 from pyzx_copy.basicrules import pi_commute_Z,pi_commute_X,fuse
-from .own_constants import (INPUT, OUTPUT, GREEN, RED, HADAMARD, N_NODE_ACTIONS, N_EDGE_ACTIONS, encode_phase)
+from .own_constants import (INPUT, OUTPUT, GREEN, RED, HADAMARD, N_NODE_ACTIONS, encode_phase)
 
 class ZXCalculus():
     """Class for single ZX-calculus environment"""
@@ -38,8 +38,8 @@ class ZXCalculus():
         self.extra_state_info = extra_state_info
         self.adapted_reward = adapted_reward
         self.step_penalty = step_penalty
-        self.length_penalty = length_penalty
-
+        self.CNOT_reward = 0.001  # reward per reduced CNOT count
+        self.T_reward = 0.5  # reward per reduced T count
 
     def _rebuild_order_cache(self):
         self.graph.my_normalize()  # rearrange nodes position(qubit, row) in the graph
@@ -55,6 +55,22 @@ class ZXCalculus():
             nbrs = list(map(int, self.graph.neighbors(v)))
             nbrs.sort(key=lambda n: (self.graph.qubit(n), self.graph.row(n), int(n)))
             self._nbrs[v] = nbrs
+
+        self._nbrs_same_color = {}
+        for v in verts:
+            nbrs = self._nbrs[v]
+            same_color_nbrs = [n for n in nbrs if self.graph.type(n) == self.graph.type(v)]
+            self._nbrs_same_color[v] = same_color_nbrs
+        
+        self._nbrs_diff_color = {}
+        for v in verts:
+            nbrs = self._nbrs[v]
+            type_v = self.graph.type(v)
+            if type_v in (VertexType.Z, VertexType.X):
+                diff_color_nbrs = [n for n in nbrs if (self.graph.type(n) != type_v and self.graph.type(n) in (VertexType.Z, VertexType.X))]
+            else:
+                diff_color_nbrs = []
+            self._nbrs_diff_color[v] = diff_color_nbrs
 
         # edges
         E = []
@@ -124,12 +140,16 @@ class ZXCalculus():
         '''
         
         self.graph, self.circuit = self.resetter.reset()
+        self.initial_cnot = self.circuit.stats_dict()['cnot']
+        self.initial_t = self.circuit.stats_dict()['tcount']
         self._rebuild_order_cache()
         self.step_counter = 0
 
-        self.current_left_nodes_by_continuous, self.current_left_nodes_by_continuous_and_broken = self.num_nodes_left
-        self.previous_left_nodes_by_continuous, self.previous_left_nodes_by_continuous_and_broken = self.current_left_nodes_by_continuous, self.current_left_nodes_by_continuous_and_broken
-        self.current_high_degree_nodes = self.count_high_degree_nodes()
+        # self.current_left_nodes_by_continuous, self.current_left_nodes_by_continuous_and_broken = self.num_nodes_left
+        # self.previous_left_nodes_by_continuous, self.previous_left_nodes_by_continuous_and_broken = self.current_left_nodes_by_continuous, self.current_left_nodes_by_continuous_and_broken
+        self.current_left_nodes_by_continuous = self.num_nodes_left
+        self.previous_left_nodes_by_continuous = self.current_left_nodes_by_continuous
+        self.current_high_degree_nodes = self.count_high_degree_nodes(degree_threshold=3)
         self.previous_high_degree_nodes = self.current_high_degree_nodes
         # self.last_score = self.compute_dense_reward()
         return self.get_observation()
@@ -148,7 +168,8 @@ class ZXCalculus():
         if self.step_counter >= self.max_steps: 
             # Return observation and reward, end_episode
             data,mask = self.reset()
-            info = {"terminated": False, "TimeLimit.truncated": True}
+            info = {"terminated": False, "TimeLimit.truncated": True, "T_reduced": self.initial_t - self.count_T_nodes(), "CNOT_reduced": self.initial_cnot - self.count_high_degree_nodes(degree_threshold=2)}
+            # print("info", info)
             return data,mask, 0, 1, info
         
         else:
@@ -158,40 +179,33 @@ class ZXCalculus():
             data, mask = self.get_observation()
 
             ## Calculate the reward
-            self.current_left_nodes_by_continuous, self.current_left_nodes_by_continuous_and_broken = self.num_nodes_left
-            self.current_high_degree_nodes = self.count_high_degree_nodes()
+            # self.current_left_nodes_by_continuous, self.current_left_nodes_by_continuous_and_broken = self.num_nodes_left
+            self.current_left_nodes_by_continuous = self.num_nodes_left
+            self.current_high_degree_nodes = self.count_high_degree_nodes(degree_threshold=3)
 
             done = 1 if self.is_terminal() else 0
 
             
-            reward = self.delta_left_continuous() + self.delta_left_cont_and_broken() + self.delta_high_degree_nodes()
+            # reward = self.delta_left_continuous() + self.delta_left_cont_and_broken() + self.delta_high_degree_nodes()
+            reward = self.delta_left_continuous() + self.delta_high_degree_nodes()
+            reward += self.T_reward * self.delta_t_nodes() # reward for T reduction compared to initial T count
             # reward = -self.current_left_nodes_by_continuous - 0.2*self.current_left_nodes_by_continuous_and_broken - self.current_high_degree_nodes
             # new_score = self.compute_dense_reward()
             # reward = new_score - self.last_score
             # self.last_score = new_score  # Update the last_score for the next step
             reward = reward - self.step_penalty # Apply penalties
-            reward = reward - 0.001* sum([d for d in self.nodes_degrees if d > 2]) # degree penalty + node count penalty
+            # cnot_reduce = self.initial_cnot - self.count_high_degree_nodes(degree_threshold=2)
+            # reward = reward + self.CNOT_reward*(cnot_reduce if cnot_reduce > 0 else 0) # reward for CNOT reduction
             
             if done:
                 reward+=10
-                reward-=0.005*len([d for d in self.nodes_degrees if d > 2]) # degree penalty + CNOT count penalty
-            info = {"terminated": done, "TimeLimit.truncated": False}
+                # reward-=0.05*len([d for d in self.nodes_degrees if d > 2]) # degree penalty + CNOT count penalty
+            info = {"terminated": done, "TimeLimit.truncated": False, "T_reduced": self.initial_t - self.count_T_nodes(), "CNOT_reduced": self.initial_cnot - self.count_high_degree_nodes(degree_threshold=2)}
+            # print("info", info)
             return data, mask, reward, done, info
 
 
     # =================Reward calculation=========================
-    def compute_dense_reward(self) -> float:
-        # Your existing dense reward formula, but callable at any time
-        n = max(1, self.n_spiders)
-        # return (
-        #     0.45*(self.n_spiders - self.current_left_nodes_by_continuous)/n
-        #     + 0.10*(self.n_spiders - self.current_left_nodes_by_continuous_and_broken)/n
-        #     + 0.45*(self.n_spiders - self.current_high_degree_nodes)/n
-        # )
-        return (
-            0.5*(self.n_spiders - self.current_left_nodes_by_continuous)/n
-            + 0.5*(self.n_spiders - self.current_high_degree_nodes)/n
-        )
     def delta_left_continuous(self):
         delta = self.previous_left_nodes_by_continuous - self.current_left_nodes_by_continuous
         self.previous_left_nodes_by_continuous = self.current_left_nodes_by_continuous
@@ -218,6 +232,12 @@ class ZXCalculus():
         # else:
         #     return 0
         return delta
+    
+    def delta_t_nodes(self):
+        current_t = self.count_T_nodes()
+        delta = self.initial_t - current_t
+        return delta
+    
     @property
     def n_spiders(self)->int:
         """Number of nodes in diagram"""
@@ -234,6 +254,11 @@ class ZXCalculus():
 
     def count_high_degree_nodes(self, degree_threshold: int = 3) -> int:
         return sum(1 for v in self._verts if len(self._nbrs[v]) > degree_threshold)
+    
+    def count_T_nodes(self) -> int:
+        return sum(1 for v in self._verts
+               if self.graph.type(v) in (VertexType.Z, VertexType.X) and is_t_like(self.graph.phase(v)))
+        
 
     @property
     def nodes_degrees(self):
@@ -241,6 +266,18 @@ class ZXCalculus():
 
     @property
     def num_nodes_left(self):
+
+        G_nx = to_networkx_graph(self.graph)
+        pairs = list(zip(self.graph.inputs(), self.graph.outputs()))  # fixed (si, ti)
+
+        # path connecting inputs to outputs
+        continuous_paths_dict = heuristic_fixed_pairs_node_disjoint(G_nx, pairs, iterations=10, restarts=5, seed=42)
+        used_nodes = set().union(*continuous_paths_dict.values())
+        left_nodes_by_continuous = set(self.graph.vertices()) - used_nodes # nodes not in any continuous path
+        return len(left_nodes_by_continuous)
+
+    @property
+    def num_nodes_left_cb(self):
 
         G_nx = to_networkx_graph(self.graph)
         pairs = list(zip(self.graph.inputs(), self.graph.outputs()))  # fixed (si, ti)
@@ -278,11 +315,15 @@ class ZXCalculus():
     # ==================Actions=========================
     def apply_action(self, action:int):
         N = len(self._verts)
-        UNFUSE_SPACE = 1 << 5  # 32
-        COLOR_OFFSET = UNFUSE_SPACE + 0
-        SPLIT_OFFSET = UNFUSE_SPACE + 1
-        PI_OFFSET    = UNFUSE_SPACE + 2
-        assert N_NODE_ACTIONS == UNFUSE_SPACE + 3, "Update offsets if you add actions."
+        UNFUSE_SPACE = (1 << 5)  # 0-31; 32
+        COLOR_OFFSET = UNFUSE_SPACE # 32
+        SPLIT_OFFSET = COLOR_OFFSET + 1 # 33
+        PI_OFFSET    = SPLIT_OFFSET + 1 # 34
+        ID_OFFSET    = PI_OFFSET + 1 # 35
+        ID_H_OFFSET  = ID_OFFSET + 1 # 36
+        FUSE_SPACE  = ID_H_OFFSET + 1 + 5 # 37 - 41 ; 42
+        BIAG_SPACE   = FUSE_SPACE + 5 # 42 - 46 ; 47
+        assert N_NODE_ACTIONS == BIAG_SPACE, "Update offsets if you add actions."
 
         if action < N * N_NODE_ACTIONS:
             node_pos = action // N_NODE_ACTIONS
@@ -295,21 +336,33 @@ class ZXCalculus():
                 return self.split_hadamard(node_pos)
             elif a == PI_OFFSET:
                 return self.pi_rule(node_pos)
+            elif a == ID_OFFSET:
+                return self.remove_identity_rule(node_pos)
+            elif a == ID_H_OFFSET:
+                return self.remove_identity_Hadamard_rule(node_pos)
+            elif a < FUSE_SPACE:
+                return self.fuse_rule(node_pos, a - (ID_H_OFFSET + 1))
+            elif a < BIAG_SPACE:
+                return self.bialgebra_rule(node_pos, a - (FUSE_SPACE))
             else:
                 return False
         else:
-            if N_EDGE_ACTIONS > 0:
-                ea = action - N * N_NODE_ACTIONS
-                edge_pos = ea // N_EDGE_ACTIONS
-                edge_action = ea % N_EDGE_ACTIONS
-                if edge_pos >= len(self._edges):
-                    return False
-                return [self.fuse_rule, self.bialgebra_rule][edge_action](edge_pos)
-            else:
-                return False
+            return False
 
 
     # ----------------node action-----------------------
+    def fuse_rule(self, node_pos, action_idx):
+        """Fuse action"""
+        v = self._verts[node_pos]
+        if self.graph.type(v) not in (VertexType.Z, VertexType.X):
+            return False
+        same_color_nbrs = self._nbrs_same_color[v]
+        if len(same_color_nbrs) < 1:
+            return False
+    
+        u = same_color_nbrs[action_idx % len(same_color_nbrs)]
+        return fuse(self.graph, v, u)
+
     def unfuse_rule(self, node_pos, action_idx):
         """Unfuse action"""
         v = self._verts[node_pos]
@@ -339,7 +392,44 @@ class ZXCalculus():
 
         return True
 
-
+    def remove_identity_rule(self, node_pos):
+        """Remove identity action"""
+        v = self._verts[node_pos]
+        if self.graph.type(v) not in (VertexType.Z, VertexType.X):
+            return False
+        if self.graph.phase(v) != 0:
+            return False
+        nbrs = self._nbrs[v]
+        if len(nbrs) != 2:
+            return False
+        u1, u2 = nbrs
+        self.graph.remove_vertex(v)
+        self.graph.add_edge((u1, u2))
+        return True
+    
+    def remove_identity_Hadamard_rule(self, node_pos):
+        """Remove identity Hadamard action"""
+        v = self._verts[node_pos]
+        if self.graph.type(v) != VertexType.H_BOX:
+            return False
+        nbrs = self._nbrs[v]
+        u1, u2 = nbrs
+        if self.graph.type(u1) == VertexType.H_BOX:
+            u1_nbrs = self._nbrs[u1]
+            u3 = [n for n in u1_nbrs if n != v][0]
+            self.graph.remove_vertex(v)
+            self.graph.remove_vertex(u1)
+            self.graph.add_edge((u2, u3))
+            return True
+        elif self.graph.type(u2) == VertexType.H_BOX:
+            u2_nbrs = self._nbrs[u2]
+            u3 = [n for n in u2_nbrs if n != v][0]
+            self.graph.remove_vertex(v)
+            self.graph.remove_vertex(u2)
+            self.graph.add_edge((u1, u3))
+            return True
+        else:
+            return False
 
     def color_change_rule(self, node_pos):
         v = self._verts[node_pos]
@@ -391,14 +481,15 @@ class ZXCalculus():
         else:
             return False
 
-    # ----------------edge action-----------------------
-    def fuse_rule(self, edge_idx):
-        """Fuse action"""
-        s,t = self._edges[edge_idx]
-        return fuse(self.graph, s, t)
 
-    def bialgebra_rule(self, edge_idx):
-        v0,v1 = self._edges[edge_idx]
+    def bialgebra_rule(self, node_pos, action_idx):
+        v = self._verts[node_pos]
+        if self.graph.type(v) not in (VertexType.Z, VertexType.X):
+            return False
+        diff_color_nbrs = self._nbrs_diff_color[v]
+        u = diff_color_nbrs[action_idx % len(diff_color_nbrs)]
+
+        v0,v1 = v,u
 
         v0t = self.graph.type(v0)
         v1t = self.graph.type(v1)
@@ -436,48 +527,48 @@ class ZXCalculus():
     # ==================Action mask=========================
     def get_action_mask(self) -> np.ndarray:
         N = len(self._verts)
-        E = len(self._edges)
-        total = N * N_NODE_ACTIONS + E * N_EDGE_ACTIONS
+        total = N * N_NODE_ACTIONS 
         mask = np.zeros(total, dtype=np.int32)
 
-        # node actions
-        UNFUSE_SPACE = 1 << 5  # 32
-        COLOR_OFFSET = UNFUSE_SPACE + 0
-        SPLIT_OFFSET = UNFUSE_SPACE + 1
-        PI_OFFSET    = UNFUSE_SPACE + 2
-        # assert N_NODE_ACTIONS == UNFUSE_SPACE + 3
+        UNFUSE_SPACE = (1 << 5)  # 0-31; 32
+        COLOR_OFFSET = UNFUSE_SPACE # 32
+        SPLIT_OFFSET = COLOR_OFFSET + 1 # 33
+        PI_OFFSET    = SPLIT_OFFSET + 1 # 34
+        ID_OFFSET    = PI_OFFSET + 1 # 35
+        ID_H_OFFSET  = ID_OFFSET + 1 # 36
+        FUSE_OFFSET  = ID_H_OFFSET + 1 # 37 - 41 
+        BIAG_OFFSET   = FUSE_OFFSET + 5 # 42 - 46 
 
         for i, v in enumerate(self._verts):
             base = i * N_NODE_ACTIONS
             deg = len(self._nbrs[v])
+            deg_same_color = len(self._nbrs_same_color[v])
+            deg_diff_color = len(self._nbrs_diff_color[v])
             if self.graph.type(v) in (VertexType.Z, VertexType.X):
                 k = min(deg, 5)
                 mask[base : base + (1 << k)] = 1  # contiguous block for unfuse patterns
                 mask[base + COLOR_OFFSET] = 1
                 mask[base + PI_OFFSET] = 1
+                if deg==2 and self.graph.phase(v) == 0:
+                    mask[base + ID_OFFSET] = 1
+                # fuse
+                m = min(deg_same_color, 5)
+                mask[base + FUSE_OFFSET : base + FUSE_OFFSET + m] = 1  # contiguous block for fuse patterns
+
+                # bialgebra
+                m2 = min(deg_diff_color, 5)
+                if deg == 3 and self.graph.phase(v) == 0:
+                    for j in range(m2):
+                        n = self._nbrs_diff_color[v][j]
+                        if len(self._nbrs[n]) == 3 and self.graph.phase(n) == 0:
+                            mask[base + BIAG_OFFSET + j] = 1  # non-contiguous for bialgebra patterns
+ 
             elif self.graph.type(v) == VertexType.H_BOX:
                 mask[base + SPLIT_OFFSET] = 1
-
-        # edge actions
-        # simple, conservative preconditions to avoid calling heavy checks every step
-        # fuse valid when endpoints have same type (Z-Z or X-X)
-        # bialgebra valid when types differ (Z-X or X-Z) and phases are 0
-        node_type = {int(v): self.graph.type(v) for v in self._verts}
-        node_phase = {int(v): self.graph.phase(v) for v in self._verts}      
-        node_nbr = {int(v): len(self._nbrs[v]) for v in self._verts}      
-
-        if N_EDGE_ACTIONS != 0:
-            for e_idx, (u, v) in enumerate(self._edges):
-                off = N * N_NODE_ACTIONS + e_idx * N_EDGE_ACTIONS
-                tu, tv = node_type[u], node_type[v]
-                pu, pv = node_phase[u], node_phase[v]
-                du, dv = node_nbr[u], node_nbr[v]
-                # fuse
-                if (tu == tv) and (tu in (VertexType.Z, VertexType.X)):
-                    mask[off + 0] = 1
-                # bialgebra (cheap gatekeeper; full validity still checked inside rule)
-                if ((tu, tv) in ((VertexType.Z, VertexType.X), (VertexType.X, VertexType.Z))) and (pu == 0) and (pv == 0) and (du == 3) and (dv == 3):
-                    mask[off + 1] = 1
+                u1,u2 = self._nbrs[v]
+                if self.graph.type(u1) == VertexType.H_BOX or self.graph.type(u2) == VertexType.H_BOX:
+                    mask[base + ID_H_OFFSET] = 1
+                 
 
         return mask
 
@@ -501,7 +592,13 @@ def save(colors:np.ndarray, angles:np.ndarray,
 # The following functions are stand-alone functions to potentially make them jit compatible in the future
 #Actions--------------------------------------------------------------------------------------------
 
-
+def is_t_like(phase):
+    # Treat phase in multiples of 0.5 with tolerance
+    try:
+        p = float(phase)
+    except Exception:
+        p = phase  # if fraction-like, handle accordingly
+    return not any(np.isclose(p, k * 0.5, atol=1e-6) for k in (0,1,2,3))
 
 
 def determine_qubit(neighbor_qubit:List[int]) -> int:

@@ -41,7 +41,7 @@ class StepsDataset(torch.utils.data.Dataset):
 def build_env_fn(args):
     """Factory returning a fresh environment instance each time it's called."""
     def make_env():
-        exp_name = f"GraphBank_nq[{args.num_qubits_min}-{args.num_qubits_max}]_gates[{args.min_gates}-{args.max_gates}]_length{args.data_length}"
+        exp_name = f"GraphBank_nq[{args.num_qubits_min}-{args.num_qubits_max}]_gates[{args.min_gates}-{args.max_gates}]_T{args.p_t}_H{args.p_h}_S{args.p_s}_CX{args.p_cnot}_X{args.p_not}_length{args.data_length}"
         bank_path = os.path.join(args.data_dir, exp_name)
         resetter = Resetter_GraphBank(
             bank_path=bank_path,
@@ -235,6 +235,9 @@ if __name__ == "__main__":
     parser.add_argument("--max_gates", type=int, default=30)
     parser.add_argument("--p_t", type=float, default=0.2)
     parser.add_argument("--p_h", type=float, default=0.2)
+    parser.add_argument("--p_s", type=float, default=0.2)
+    parser.add_argument("--p_cnot", type=float, default=0.2)
+    parser.add_argument("--p_not", type=float, default=0.2)
     parser.add_argument("--resetter_seed", type=int, default=-1, help="-1 = random each reset")
 
     args = parser.parse_args()

@@ -19,8 +19,7 @@ class Resetter_GraphBank:
         self.rng = np.random.default_rng(seed)
         self.shuffle = shuffle
         self._idx = 0
-        if self.shuffle:
-            self.rng.shuffle(self.graphs)
+
 
     def reset(self):
         # sample

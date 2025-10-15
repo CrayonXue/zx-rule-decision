@@ -79,6 +79,8 @@ class SubprocVecEnv:
             return {
                 "terminated": bool(info.get("terminated", False)) if isinstance(info, dict) else False,
                 "TimeLimit.truncated": bool(info.get("TimeLimit.truncated", False)) if isinstance(info, dict) else False,
+                "T_reduced": int(info.get("T_reduced", 0)) if isinstance(info, dict) else 0,
+                "CNOT_reduced": int(info.get("CNOT_reduced", 0)) if isinstance(info, dict) else 0,
             }
         infos = [_mk_info(info) for (_, _, _, info) in results]
         return next_obs, rewards, dones, infos

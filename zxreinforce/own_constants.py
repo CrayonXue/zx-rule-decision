@@ -13,8 +13,7 @@ RED = [0,0,0,1,0]
 HADAMARD = [0,0,0,0,1]    
 
 # Number of node/edge actions
-N_NODE_ACTIONS = 1*32+3
-N_EDGE_ACTIONS = 2
+N_NODE_ACTIONS = 32+5 + 5 + 5
 
 
 # one-hot encoding for the angles: 0, pi/2, 3pi/4, pi, 5pi/4, 3pi/2, 7pi/4

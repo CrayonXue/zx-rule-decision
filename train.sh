@@ -37,24 +37,27 @@ EVAL=False  # Set to True if you want to evaluate the model after training.
 
 num_qubits_min=5
 num_qubits_max=10
-min_gates=10
-max_gates=20
-p_t=0.2 
-p_h=0.2
+min_gates=10 
+max_gates=20 
+p_t=0.4 
+p_h=0.1
+p_s=0.1
+p_cnot=0.3
+p_not=0.1
 
-max_epochs=10000
+max_epochs=100000
 ppo_updates_per_epoch=1
 max_train_steps=50000
-emb_dim=512
+emb_dim=1024
 hid_dim=512
 num_envs=8
 rollout_steps=512
-minibatch_size=128
+minibatch_size=256
 env_max_steps=100
 step_penalty=0.01
 length_penalty=0.001
 logger_type='swanlab'
-
+precision='32-true'
 data_length=10000  # Number of graphs in the graph bank pickle file.
 if [ "$GENERATE" = "True" ]; then
     python zxreinforce/generate.py \
@@ -64,7 +67,12 @@ if [ "$GENERATE" = "True" ]; then
     --num_qubits_max $num_qubits_max \
     --min_gates $min_gates \
     --max_gates $max_gates \
-    --max_reward 0.9 
+    --p_t $p_t \
+    --p_h $p_h \
+    --p_s $p_s \
+    --p_cnot $p_cnot \
+    --p_not $p_not \
+    --max_reward 0.95 
 fi
 
 
@@ -80,6 +88,7 @@ if [ "$TRAIN" = "True" ]; then
     --rollout_steps $rollout_steps \
     --minibatch_size $minibatch_size \
     --logger_type $logger_type \
+    --precision $precision \
     --env_max_steps $env_max_steps \
     --step_penalty $step_penalty \
     --length_penalty $length_penalty \
@@ -90,6 +99,9 @@ if [ "$TRAIN" = "True" ]; then
     --min_gates $min_gates \
     --max_gates $max_gates \
     --p_t $p_t \
+    --p_s $p_s \
+    --p_cnot $p_cnot \
+    --p_not $p_not \
     --p_h $p_h 
 fi
 

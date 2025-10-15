@@ -20,6 +20,9 @@ class Resetter_Circuit():
                  max_gates:int,
                  p_t: float = 0.2,
                  p_h: float = 0.2,
+                 p_s: float = 0.2,
+                 p_cnot: float = 0.2,
+                 p_not: float = 0.2,
                  seed:Optional[int]=None):
         """generate a random circuit: pyzx circuit then convert to graph"""
         self.num_qubits_min = num_qubits_min
@@ -28,13 +31,16 @@ class Resetter_Circuit():
         self.max_gates = max_gates
         self.p_t = p_t
         self.p_h = p_h
+        self.p_s = p_s 
+        self.p_cnot = p_cnot
+        self.p_not = p_not
         self.seed = seed
         self.rng = np.random.default_rng(seed)
 
     def reset(self)->tuple:
         n_qubits = self.rng.integers(low=self.num_qubits_min, high=self.num_qubits_max+1)
         n_gates = self.rng.integers(low=self.min_gates, high=self.max_gates+1)
-        self.circuit: zx_copy.Circuit = zx_copy.generate.CNOT_HAD_PHASE_circuit(n_qubits, n_gates, p_had=self.p_h, p_t=self.p_t)
+        self.circuit: zx_copy.Circuit = zx_copy.generate.my_circuit(n_qubits, n_gates, p_had=self.p_h, p_t=self.p_t, p_s=self.p_s, p_cnot=self.p_cnot, p_not = self.p_not, seed=self.seed)
         self.graph: zx_copy.Graph = self.circuit.to_graph()
         zx_copy.full_reduce(self.graph)
         return self.graph, self.circuit
@@ -93,6 +99,9 @@ def build_graph_bank(
     num_qubits_max: int = 6,
     min_gates: int = 5,
     max_gates: int = 30,
+    p_s: float = 0.2,
+    p_cnot: float = 0.2,
+    p_not: float = 0.2,
     p_t: float = 0.2,
     p_h: float = 0.2,
     max_reward: float = 0.9,
@@ -106,6 +115,9 @@ def build_graph_bank(
         max_gates=max_gates,
         p_t=p_t,
         p_h=p_h,
+        p_s=p_s,
+        p_cnot=p_cnot,
+        p_not=p_not,
         seed=seed,
     )
 
@@ -150,12 +162,15 @@ if __name__ == "__main__":
     parser.add_argument("--max_gates", type=int, default=30)
     parser.add_argument("--p_t", type=float, default=0.2)
     parser.add_argument("--p_h", type=float, default=0.2)
+    parser.add_argument("--p_s", type=float, default=0.2)
+    parser.add_argument("--p_cnot", type=float, default=0.2)
+    parser.add_argument("--p_not", type=float, default=0.2)
     parser.add_argument("--max_reward", type=float, default=0.9, help="Max dense reward to accept a graph into the bank.")
     parser.add_argument("--seed", type=int, default=123)
 
 
     args = parser.parse_args()
-    exp_name = f"GraphBank_nq[{args.num_qubits_min}-{args.num_qubits_max}]_gates[{args.min_gates}-{args.max_gates}]_length{args.keep_limit}"
+    exp_name = f"GraphBank_nq[{args.num_qubits_min}-{args.num_qubits_max}]_gates[{args.min_gates}-{args.max_gates}]_T{args.p_t}_H{args.p_h}_S{args.p_s}_CX{args.p_cnot}_X{args.p_not}_length{args.keep_limit}"
     
     out_path = os.path.join(args.out_path, f"{exp_name}.pkl")
     circuits_out_path = os.path.join(args.out_path, f"{exp_name}_circuits.pkl")
@@ -168,6 +183,9 @@ if __name__ == "__main__":
         max_gates=args.max_gates,
         p_t=args.p_t,
         p_h=args.p_h,
+        p_s=args.p_s,
+        p_cnot=args.p_cnot,
+        p_not=args.p_not,
         max_reward=args.max_reward,
         seed=args.seed,
         circuits_out_path=circuits_out_path,
