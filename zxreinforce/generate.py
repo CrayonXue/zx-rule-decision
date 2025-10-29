@@ -18,6 +18,8 @@ class Resetter_Circuit():
                  num_qubits_max:int,
                  min_gates:int,
                  max_gates:int,
+                 p_tofolli: float = 0.0,
+                 p_cp: float = 0.0,
                  p_t: float = 0.2,
                  p_h: float = 0.2,
                  p_s: float = 0.2,
@@ -29,6 +31,8 @@ class Resetter_Circuit():
         self.num_qubits_max = num_qubits_max
         self.min_gates = min_gates
         self.max_gates = max_gates
+        self.p_tofolli = p_tofolli
+        self.p_cp = p_cp
         self.p_t = p_t
         self.p_h = p_h
         self.p_s = p_s 
@@ -40,7 +44,8 @@ class Resetter_Circuit():
     def reset(self)->tuple:
         n_qubits = self.rng.integers(low=self.num_qubits_min, high=self.num_qubits_max+1)
         n_gates = self.rng.integers(low=self.min_gates, high=self.max_gates+1)
-        self.circuit: zx_copy.Circuit = zx_copy.generate.my_circuit(n_qubits, n_gates, p_had=self.p_h, p_t=self.p_t, p_s=self.p_s, p_cnot=self.p_cnot, p_not = self.p_not, seed=self.seed)
+        fresh_seed = int(self.rng.integers(0, 2**31 - 1))
+        self.circuit: zx_copy.Circuit = zx_copy.generate.my_circuit(n_qubits, n_gates,p_tofolli=self.p_tofolli, p_cp = self.p_cp, p_had=self.p_h, p_t=self.p_t, p_s=self.p_s, p_cnot=self.p_cnot, p_not = self.p_not, seed=fresh_seed)
         self.graph: zx_copy.Graph = self.circuit.to_graph()
         zx_copy.full_reduce(self.graph)
         return self.graph, self.circuit
@@ -99,36 +104,39 @@ def build_graph_bank(
     num_qubits_max: int = 6,
     min_gates: int = 5,
     max_gates: int = 30,
-    p_s: float = 0.2,
+    p_tofolli: float = 0.2,
+    p_cp: float = 0.0,
+    p_s: float = 0.1,
     p_cnot: float = 0.2,
-    p_not: float = 0.2,
+    p_not: float = 0.1,
     p_t: float = 0.2,
     p_h: float = 0.2,
     max_reward: float = 0.9,
     seed: int = 123,
-):
+    ):
     rng = np.random.default_rng(seed)
+    fresh_seed = int(rng.integers(0, 2**31 - 1))
+
     resetter = Resetter_Circuit(
         num_qubits_min=num_qubits_min,
         num_qubits_max=num_qubits_max,
         min_gates=min_gates,
         max_gates=max_gates,
+        p_tofolli=p_tofolli,
+        p_cp=p_cp,
         p_t=p_t,
         p_h=p_h,
         p_s=p_s,
         p_cnot=p_cnot,
         p_not=p_not,
-        seed=seed,
+        seed=fresh_seed,
     )
 
     kept = []
     circuits = []
     i=0
     while i < keep_limit:
-        g, c = resetter.reset()          # pyzx graph + circuit    
-        # optional: ensure any normalization you want is applied once here
-        # zx_copy.full_reduce(g)  # already called in Resetter_Circuit.reset()
-
+        g, c = resetter.reset() 
         if compute_dense_reward(g) > max_reward:
             continue
         kept.append(g)
@@ -160,6 +168,8 @@ if __name__ == "__main__":
     parser.add_argument("--num_qubits_max", type=int, default=6)
     parser.add_argument("--min_gates", type=int, default=5)
     parser.add_argument("--max_gates", type=int, default=30)
+    parser.add_argument("--p_tofolli", type=float, default=0.2)
+    parser.add_argument("--p_cp", type=float, default=0.0)
     parser.add_argument("--p_t", type=float, default=0.2)
     parser.add_argument("--p_h", type=float, default=0.2)
     parser.add_argument("--p_s", type=float, default=0.2)
@@ -170,7 +180,7 @@ if __name__ == "__main__":
 
 
     args = parser.parse_args()
-    exp_name = f"GraphBank_nq[{args.num_qubits_min}-{args.num_qubits_max}]_gates[{args.min_gates}-{args.max_gates}]_T{args.p_t}_H{args.p_h}_S{args.p_s}_CX{args.p_cnot}_X{args.p_not}_length{args.keep_limit}"
+    exp_name = f"GraphBank_nq[{args.num_qubits_min}-{args.num_qubits_max}]_gates[{args.min_gates}-{args.max_gates}]_T{args.p_t}_H{args.p_h}_S{args.p_s}_CX{args.p_cnot}_X{args.p_not}_TOF{args.p_tofolli}_CP{args.p_cp}_length{args.keep_limit}"
     
     out_path = os.path.join(args.out_path, f"{exp_name}.pkl")
     circuits_out_path = os.path.join(args.out_path, f"{exp_name}_circuits.pkl")
@@ -181,6 +191,8 @@ if __name__ == "__main__":
         num_qubits_max=args.num_qubits_max,
         min_gates=args.min_gates,
         max_gates=args.max_gates,
+        p_tofolli=args.p_tofolli,
+        p_cp=args.p_cp,
         p_t=args.p_t,
         p_h=args.p_h,
         p_s=args.p_s,

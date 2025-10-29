@@ -51,9 +51,12 @@ class PPOLightningGNN(pl.LightningModule):
     def __init__(
         self,
         env_fn,
-        node_feat_dim: int = 5 + 10 + 1,   # type[5] + phase[10] + qubit_on[1]; add degree if you include it
-        emb_dim: int = 128,
+        node_feat_dim: int = 5 + 10 + 4,   # type[5] + phase[10] + qubit_on[1]; add degree if you include it
+        emb_dim: int = 256,
         hid_dim: int = 128,
+        layers: int = 3,
+        rec_dim: int = 256,
+        tbptt_steps: int = 64,
         rollout_steps: int = 512,
         batch_size: int = 256,
         epochs: int = 4,
@@ -71,7 +74,7 @@ class PPOLightningGNN(pl.LightningModule):
         # self.envs = [env_fn() for _ in range(num_envs)]
         self.vec = SubprocVecEnv([env_fn for _ in range(num_envs)], start_method="spawn")
 
-        self.net = PolicyValueNet(gnn_in_dim=node_feat_dim, emb=emb_dim, hid=hid_dim)
+        self.net = PolicyValueNet(gnn_in_dim=node_feat_dim, emb=emb_dim, hid=hid_dim, layers=layers)
 
         # PPO hparams
         self.rollout_steps = rollout_steps
@@ -89,8 +92,14 @@ class PPOLightningGNN(pl.LightningModule):
         self._ent_coef_start = float(self.ent_coef)
         self._ent_coef_end = 0.25 * self._ent_coef_start  # tweak as desired
 
+        self.rec_dim = rec_dim
+        self.tbptt_steps = tbptt_steps
+
         self.automatic_optimization = False
         self.use_global_node = use_global_node
+
+        # per-env recurrent hidden state (actor)
+        self.h_actor = torch.zeros(1, num_envs, rec_dim)  # moved to device later
 
         # episodic stats
         self._ep_ret = np.zeros(self.num_envs, dtype=np.float32)
@@ -114,12 +123,13 @@ class PPOLightningGNN(pl.LightningModule):
     def reset_envs(self):
         results = self.vec.reset()
         self.obs = [{"data": d, "mask": m} for (d, m) in results]
-        # # Each env.reset() should return Data
-        # self.obs = []
-        # for env in self.envs:
-        #     ret = env.reset()
-        #     data, mask = ret
-        #     self.obs.append({"data": data, "mask": mask})
+        # zero actor hidden
+        self.h_actor = torch.zeros(1, self.num_envs, self.rec_dim, device=self.device)
+
+    def on_train_start(self):
+        self.reset_envs()
+        # ensure hidden is on device even if reset_envs ran before device was set
+        self.h_actor = torch.zeros(1, self.num_envs, self.rec_dim, device=self.device)
 
     def _with_global_node(self, data: Data, mask: torch.Tensor) -> tuple[Data, torch.Tensor]:
         # data.x: [N, F], data.edge_index: [2, E]; mask: [N * N_NODE_ACTIONS] (bool)
@@ -141,6 +151,11 @@ class PPOLightningGNN(pl.LightningModule):
         else:
             edge_index_ext = torch.empty(2, 0, dtype=torch.long, device=device)
 
+        # edge_attr
+        E, D = data.edge_attr.size()
+        zeros = torch.zeros((2 * N, D), dtype=data.edge_attr.dtype, device=device)
+        edge_attr_ext = torch.cat([data.edge_attr, zeros], dim=0)        
+
         # Mark which node is global
         is_global = torch.zeros(N + 1, dtype=torch.bool, device=device)
         is_global[N] = True
@@ -150,7 +165,7 @@ class PPOLightningGNN(pl.LightningModule):
             mask = mask.to(torch.bool)
         mask_ext = torch.cat([mask, torch.zeros(N_NODE_ACTIONS, dtype=torch.bool, device=mask.device)], dim=0)
 
-        data_ext = Data(x=x_ext, edge_index=edge_index_ext)
+        data_ext = Data(x=x_ext, edge_index=edge_index_ext,edge_attr=edge_attr_ext)
         data_ext.is_global = is_global  # carried through PyG Batch
         return data_ext, mask_ext
 
@@ -192,14 +207,14 @@ class PPOLightningGNN(pl.LightningModule):
 
 
     @torch.no_grad()
-    def _select_action(self, obs_batch: List[dict]):
+    def _select_action(self, obs_batch: List[dict], h_in: torch.Tensor):
         batch, mask = self._obs_to_batch(obs_batch)
-        logits, values = self.net(batch)  # logits: [B, A_max], values: [B]
+        logits, values, h_out = self.net(batch, h_in)  # logits: [B, A_max], values: [B], h_out: [1,B,rec_dim]
         assert logits.size(0) == mask.size(0) and logits.size(1) == mask.size(1)
         dist = masked_categorical(logits, mask)
         action = dist.sample()          # [B]
         logprob = dist.log_prob(action) # [B]
-        return action, logprob, values
+        return action, logprob, values, h_out
 
     def _step_envs(self, actions: torch.Tensor):
         # actions: [B] on cuda; move to cpu ints
@@ -224,36 +239,49 @@ class PPOLightningGNN(pl.LightningModule):
             pass
 
     def collect_rollout(self):
-        obs_buf, act_buf, logp_buf, val_buf, rew_buf, done_buf, timeout_buf, terminated_buf, T_reduce_buf, CNOT_reduce_buf = [], [], [], [], [], [], [], [],[],[]
+        obs_buf, act_buf, logp_buf, val_buf = [], [], [], []
+        rew_buf, done_buf, timeout_buf, terminated_buf = [], [], [], []
+        T_reduce_buf, CNOT_reduce_buf = [], []
+
+        h = self.h_actor  # [1,B,rec_dim]
         for _ in range(self.rollout_steps):
-            action, logp, value = self._select_action(self.obs)
+            action, logp, value, h_next = self._select_action(self.obs, h)
             obs_buf.append(self.obs)
             act_buf.append(action)
             logp_buf.append(logp)
             val_buf.append(value)
-    
+
             self.obs, rewards, dones, infos = self._step_envs(action)
             rew_buf.append(torch.from_numpy(rewards))
             done_buf.append(torch.from_numpy(dones.astype(np.float32)))
             timeout_buf.append(torch.tensor([int(info.get("TimeLimit.truncated", False)) for info in infos]))
             terminated_buf.append(torch.tensor([int(info.get("terminated", False)) for info in infos]))
-            # print("ppo print info", infos[0])
-            T_reduce_buf.append(torch.tensor([int(info.get("T_reduced")) for info in infos]))
-            CNOT_reduce_buf.append(torch.tensor([int(info.get("CNOT_reduced")) for info in infos]))
+            T_reduce_buf.append(torch.tensor([int(info.get("T_reduced", 0)) for info in infos]))
+            CNOT_reduce_buf.append(torch.tensor([int(info.get("CNOT_reduced", 0)) for info in infos]))
+
+            # carry hidden and zero where episodes ended
+            h = h_next
+            if np.any(dones):
+                dmask = torch.from_numpy(dones.astype(np.bool_)).to(self.device)
+                h[:, dmask, :] = 0
+
+        # stash latest actor hidden for next update loop
+        self.h_actor = h.detach()
 
         with torch.no_grad():
-            _, _, last_value = self._select_action(self.obs)  # [B]
+            _, _, last_value, _ = self._select_action(self.obs, self.h_actor)
 
-        act = torch.stack(act_buf)                 # [T,B]
-        logp = torch.stack(logp_buf)               # [T,B]
-        val = torch.stack(val_buf).squeeze(-1)     # [T,B]
-        rew = torch.stack(rew_buf)                 # [T,B]
-        done = torch.stack(done_buf)               # [T,B]
-        timeouts = torch.stack(timeout_buf)        # [T,B]
-        terminated = torch.stack(terminated_buf)   # [T,B]
-        T_reduced = torch.stack(T_reduce_buf)     # [T,B]
-        CNOT_reduced = torch.stack(CNOT_reduce_buf)   # [T,B]
+        act = torch.stack(act_buf)               # [T,B]
+        logp = torch.stack(logp_buf)             # [T,B]
+        val = torch.stack(val_buf).squeeze(-1)   # [T,B]
+        rew = torch.stack(rew_buf)               # [T,B]
+        done = torch.stack(done_buf)             # [T,B]
+        timeouts = torch.stack(timeout_buf)      # [T,B]
+        terminated = torch.stack(terminated_buf) # [T,B]
+        T_reduced = torch.stack(T_reduce_buf)    # [T,B]
+        CNOT_reduced = torch.stack(CNOT_reduce_buf) # [T,B]
         return obs_buf, act, logp, val, rew, done, last_value.squeeze(-1), timeouts, T_reduced, CNOT_reduced
+
 
     @torch.no_grad()
     def compute_gae(self, rewards, values, dones, last_value,timeouts):
@@ -282,12 +310,7 @@ class PPOLightningGNN(pl.LightningModule):
         opt = self.optimizers()
 
         # 1) Rollout
-        # torch.cuda.synchronize()
-        # start_time = time.time()
-        obs_traj, act, logp_old, val, rew, done, last_value, timeouts,T_reduced, CNOT_reduced = self.collect_rollout()
-        # torch.cuda.synchronize()
-        # end_time = time.time()
-        # self.log("time/rollout", end_time - start_time, prog_bar=False, on_step=True, on_epoch=False)
+        (obs_traj, act, logp_old, val, rew, done, last_value,timeouts, T_reduced, CNOT_reduced) = self.collect_rollout()
 
         self._total_env_steps += self.rollout_steps * self.num_envs
         self.log_counter("counters/total_env_steps", self._total_env_steps, prog_bar=True)
@@ -298,101 +321,108 @@ class PPOLightningGNN(pl.LightningModule):
         # 2) GAE
         adv, ret = self.compute_gae(rew.detach(), val.detach(), done.detach(), last_value.detach(), timeouts.detach())
         T, B = act.shape
-        total = T * B
-        act = act.reshape(total).to(self.device)
-        logp_old = logp_old.reshape(total).to(self.device)
-        adv = _normalize_adv(adv.reshape(total)).to(self.device)
-        ret = ret.reshape(total).to(self.device)
+
+        # total = T * B
+        # act = act.reshape(total).to(self.device)
+        # ret = ret.reshape(total).to(self.device)
         
-        val_old_flat = val.detach().reshape(total).to(self.device)  # v_t from rollout
+        # val_old_flat = val.detach().reshape(total).to(self.device)  # v_t from rollout
         target_kl = 0.02  # try 0.01–0.05       
 
+        real_done = done * (1 - timeouts)  # treat timeout as nonterminal
         with torch.no_grad():
-            # rollout constants
             self.log_scalar("rollout/T", self.rollout_steps)
             self.log_scalar("rollout/B", self.num_envs)
             self.log_scalar("rollout/samples", self.rollout_steps * self.num_envs)
-
-            # reward stats
             self.log_scalar("rollout/reward_mean", rew.float().mean(), prog_bar=True)
             self.log_scalar("rollout/reward_std", rew.float().std(unbiased=False))
-            self.log_scalar("rollout/done_frac", done.float().mean())
-
-            # statics 
+            self.log_scalar("rollout/done_frac", (real_done.float().mean())/(done.float().mean()))
             self.log_scalar("rollout/T_reduced_mean", T_reduced.float().mean())
             self.log_scalar("rollout/T_reduced_std", T_reduced.float().std(unbiased=False))
             self.log_scalar("rollout/CNOT_reduced_mean", CNOT_reduced.float().mean())
             self.log_scalar("rollout/CNOT_reduced_std", CNOT_reduced.float().std(unbiased=False))
-
-            # value explained variance
             v_flat = val.detach().reshape(-1)
-            r_flat = ret.detach()
+            r_flat = (adv + val).detach().reshape(-1)
             var_y = torch.var(r_flat, unbiased=False)
             ev = 1.0 - torch.var(r_flat - v_flat, unbiased=False) / (var_y + 1e-8)
             self.log_scalar("value/explained_variance", ev)
 
 
         # 3) Flatten obs (list of lists) into length TB
-        flat_obs: List[dict] = []
-        for t in range(T):
-            flat_obs.extend(obs_traj[t])
+        # Initialize training hidden to zeros
+        h_train = torch.zeros(1, B, self.rec_dim, device=self.device)
 
-        # 4) PPO epochs/minibatches
-
-        idx = torch.randperm(total, device=self.device)
-        # idx = torch.randperm(total)
-        mb = self.batch_size
-
+        # Accumulators
         pg_losses, v_losses, entropies, kls, clipfracs = [], [], [], [], []
+        loss_acc = 0.0
+        accum_count = 0
+        val_old = val.detach()    # [T,B]
+        logp_old_all = logp_old.detach()  # [T,B]
+        adv_all = _normalize_adv(adv.detach())  # [T,B]
+        ret_all = (adv + val).detach()  # [T,B]
 
-        for _ in range(self.epochs):
-            for start in range(0, total, mb):
-                sl = idx[start:start + mb]
-                obs_mb = [flat_obs[i] for i in sl.tolist()]
+        for t in range(T):
+            # Build batch for all envs at time t
+            obs_mb = obs_traj[t]
+            actions_mb = act[t].to(self.device)
+            logp_old_mb = logp_old_all[t].to(self.device)
+            adv_mb = adv_all[t].to(self.device)
+            ret_mb = ret_all[t].to(self.device)
+            v_old_mb = val_old[t].to(self.device)
+            done_mb = done[t].to(self.device).bool()
 
-                # slice
-                actions_mb = act[sl].to(self.device)
-                logp_old_mb = logp_old[sl].to(self.device)
-                adv_mb = adv[sl].to(self.device)
-                ret_mb = ret[sl].to(self.device)
+            batch_mb, mask_mb = self._obs_to_batch(obs_mb)
+            logits, values, h_next = self.net(batch_mb, h_train)
 
-                batch_mb, mask_mb = self._obs_to_batch(obs_mb)
-                logits, values = self.net(batch_mb)
-                dist = masked_categorical(logits, mask_mb)
-                logp_new = dist.log_prob(actions_mb)
-                entropy = dist.entropy().mean()
+            dist = masked_categorical(logits, mask_mb)
+            logp_new = dist.log_prob(actions_mb)
+            entropy = dist.entropy().mean()
 
-                ratio = (logp_new - logp_old_mb).exp()
-                unclipped = ratio * adv_mb
-                clipped = torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps) * adv_mb
-                pg_loss = -torch.min(unclipped, clipped).mean()
+            ratio = (logp_new - logp_old_mb).exp()
+            unclipped = ratio * adv_mb
+            clipped = torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps) * adv_mb
+            pg_loss = -torch.min(unclipped, clipped).mean()
 
-                # value clipping
-                v_old_mb = val_old_flat[sl]
-                v_clipped = v_old_mb + (values - v_old_mb).clamp(-self.clip_eps, self.clip_eps)
-                v_loss_unclipped = F.mse_loss(values, ret_mb, reduction="mean")
-                v_loss_clipped = F.mse_loss(v_clipped, ret_mb, reduction="mean")
-                v_loss = torch.max(v_loss_unclipped, v_loss_clipped)
-                loss = pg_loss + self.vf_coef * v_loss - self.curr_ent_coef() * entropy
-                #
-                # v_loss = F.mse_loss(values, ret_mb)
-                # loss = pg_loss + self.vf_coef * v_loss - self.ent_coef * entropy
+            # value clipping
+            v_clipped = v_old_mb + (values - v_old_mb).clamp(-self.clip_eps, self.clip_eps)
+            v_loss_unclipped = F.mse_loss(values, ret_mb, reduction="mean")
+            v_loss_clipped = F.mse_loss(v_clipped, ret_mb, reduction="mean")
+            v_loss = torch.max(v_loss_unclipped, v_loss_clipped)
 
+            loss = pg_loss + self.vf_coef * v_loss - self.curr_ent_coef() * entropy
+            loss_acc = loss_acc + loss
+            accum_count += 1
+
+            # Logging pieces
+            with torch.no_grad():
+                approx_kl = (logp_old_mb - logp_new).mean()
+                clipfrac = (torch.abs(ratio - 1.0) > self.clip_eps).float().mean()
+                pg_losses.append(pg_loss.detach()); v_losses.append(v_loss.detach())
+                entropies.append(entropy.detach()); kls.append(approx_kl.detach()); clipfracs.append(clipfrac.detach())
+
+            # Truncate and step optimizer every tbptt_steps
+            if ((t + 1) % self.tbptt_steps == 0) or (t == T - 1):
                 opt.zero_grad(set_to_none=True)
-                self.manual_backward(loss)
+                self.manual_backward(loss_acc / accum_count)
                 nn.utils.clip_grad_norm_(self.parameters(), max_norm=0.5)
                 opt.step()
+                # detach hidden to truncate BPTT
+                h_next = h_next.detach()
+                loss_acc = 0.0
+                accum_count = 0
 
-                with torch.no_grad():
-                    approx_kl = (logp_old_mb - logp_new).mean()
-                    if approx_kl > 1.5 * target_kl:
-                        break  # break minibatch loop for this epoch
-                    clipfrac = (torch.abs(ratio - 1.0) > self.clip_eps).float().mean()
-                    pg_losses.append(pg_loss.detach())
-                    v_losses.append(v_loss.detach())
-                    entropies.append(entropy.detach())
-                    kls.append(approx_kl.detach())
-                    clipfracs.append(clipfrac.detach())
+            # Zero hidden for envs that ended at time t (start fresh next step)
+            if done_mb.any():
+                h_next[:, done_mb, :] = 0
+
+            # carry to next step
+            h_train = h_next
+
+            # Early stop inside a window if KL explodes (optional)
+            if kls[-1] > 1.5 * target_kl:
+                # still continue t loop to keep hidden in sync, but skip grads by accumulating zero
+                pass
+
         def _m(lst): return torch.stack(lst).mean() if len(lst) else torch.tensor(0.0, device=self.device)
 
         metrics = {
@@ -401,8 +431,8 @@ class PPOLightningGNN(pl.LightningModule):
             "loss/entropy": _m(entropies),
             "ppo/approx_kl": _m(kls),
             "ppo/clipfrac": _m(clipfracs),
-            "stats/return_mean": ret.mean().detach(),
-            "stats/return_std": ret.std(unbiased=False).detach(),
+            "stats/return_mean": (adv + val).mean().detach(),
+            "stats/return_std": (adv + val).std(unbiased=False).detach(),
         }
         if len(self._completed_returns) > 0:
             metrics.update({
@@ -414,6 +444,7 @@ class PPOLightningGNN(pl.LightningModule):
             self._completed_lengths.clear()
 
         self.log_scalars(metrics, prog_bar_keys=("loss/policy", "stats/return_mean"))
+
 
 
     def on_train_start(self):

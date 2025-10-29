@@ -32,3 +32,11 @@ class Resetter_GraphBank:
         c = self.circuits[idx]
         # Important: return a fresh copy so env mutations don’t leak
         return g.copy(),c
+
+class Resetter_graph:
+    def __init__(self, circuit):
+        self.circuit = circuit
+        self.graph = circuit.to_graph()
+
+    def reset(self):
+        return self.graph,self.circuit

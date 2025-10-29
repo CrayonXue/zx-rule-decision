@@ -39,7 +39,7 @@ class ZXCalculus():
         self.adapted_reward = adapted_reward
         self.step_penalty = step_penalty
         self.CNOT_reward = 0.001  # reward per reduced CNOT count
-        self.T_reward = 0.5  # reward per reduced T count
+        self.T_reward = 2  # reward per reduced T count
 
     def _rebuild_order_cache(self):
         self.graph.my_normalize()  # rearrange nodes position(qubit, row) in the graph
@@ -86,6 +86,15 @@ class ZXCalculus():
         Get data,mask from the environment's graph"""
         nodes_features = []
         verts = self._verts
+        # Precompute normalizers
+        if len(verts) == 0:
+            max_row = 1
+            n_qubits = 1
+        else:
+            max_row = max(self.graph.row(u) for u in verts) or 1
+            qubits = [self.graph.qubit(u) for u in verts]
+            n_qubits = (max(qubits) if qubits else 0) + 1
+
         for v in verts:
             if v in self.graph.inputs():
                 node_type = INPUT
@@ -103,8 +112,12 @@ class ZXCalculus():
                 node_type = HADAMARD
                 node_phase = encode_phase(None)
             
-            
-            node_feasture = node_type + node_phase + [self.graph.qubit(v)] #5+10+1
+            degree = len(self._nbrs[v])
+            is_boundary = int(v in self.graph.inputs() or v in self.graph.outputs())
+            row_norm = self.graph.row(v) / max_row
+            qubit_norm = self.graph.qubit(v) / max(1, n_qubits - 1)
+
+            node_feasture = node_type + node_phase + [degree, is_boundary,row_norm,qubit_norm] #5+10+4
             nodes_features.append(node_feasture)
         x = torch.tensor(nodes_features, dtype=torch.float32)
 
@@ -114,16 +127,39 @@ class ZXCalculus():
 
         if not edge_list:
             edge_index = torch.empty((2, 0), dtype=torch.long)
+            edge_attr = torch.empty((0, 4), dtype=torch.float32)
         else:
-            uv = [(id2pos[int(u)], id2pos[int(v)]) for u, v in edge_list]
-            uv = uv + [(v, u) for (u, v) in uv]
-            edge_index = torch.tensor(uv, dtype=torch.long).t().contiguous()
+            uv=[]
+            ea=[]
+            for (u,v) in edge_list:
+                u, v = int(u), int(v)
+                ui, vi = id2pos[u], id2pos[v]
 
+                def feat(a, b):
+                    dq = abs(self.graph.qubit(a) - self.graph.qubit(b)) / max(1, n_qubits - 1)
+                    dr = abs(self.graph.row(a) - self.graph.row(b)) / max_row
+                    h_incident = int(self.graph.type(a) == VertexType.H_BOX or self.graph.type(b) == VertexType.H_BOX)
+                    same_color = int(
+                        (self.graph.type(a) in (VertexType.Z, VertexType.X)) and
+                        (self.graph.type(a) == self.graph.type(b))
+                    )
+                    return [dq, dr, h_incident, same_color]
+
+                # u->v
+                uv.append((ui, vi))
+                ea.append(feat(u, v))
+                # v->u
+                uv.append((vi, ui))
+                ea.append(feat(v, u))                
+
+            edge_index = torch.tensor(uv, dtype=torch.long).t().contiguous()
+            edge_attr = torch.tensor(ea, dtype=torch.float32)                  # [E, 4]
         # Precompute feasibility mask (variable length: N*node_act + E*edge_act + 1)
         mask = torch.from_numpy(self.get_action_mask().astype(np.int8))  # [A_var]
         data = Data(
             x=x, 
-            edge_index=edge_index)
+            edge_index=edge_index,
+            edge_attr=edge_attr)
         return data, mask
 
     def is_terminal(self) -> bool:
@@ -140,18 +176,21 @@ class ZXCalculus():
         '''
         
         self.graph, self.circuit = self.resetter.reset()
-        self.initial_cnot = self.circuit.stats_dict()['cnot']
-        self.initial_t = self.circuit.stats_dict()['tcount']
+        initial_circuit = self.circuit.to_basic_gates()
+        self.initial_cnot = initial_circuit.stats_dict()['cnot']
+        self.initial_t = initial_circuit.stats_dict()['tcount']
         self._rebuild_order_cache()
         self.step_counter = 0
 
-        # self.current_left_nodes_by_continuous, self.current_left_nodes_by_continuous_and_broken = self.num_nodes_left
-        # self.previous_left_nodes_by_continuous, self.previous_left_nodes_by_continuous_and_broken = self.current_left_nodes_by_continuous, self.current_left_nodes_by_continuous_and_broken
         self.current_left_nodes_by_continuous = self.num_nodes_left
         self.previous_left_nodes_by_continuous = self.current_left_nodes_by_continuous
         self.current_high_degree_nodes = self.count_high_degree_nodes(degree_threshold=3)
         self.previous_high_degree_nodes = self.current_high_degree_nodes
-        # self.last_score = self.compute_dense_reward()
+        self.current_cnot_proxy = self.count_high_degree_nodes(degree_threshold=2) - self.count_high_degree_nodes(degree_threshold=3)
+        self.previous_cnot_proxy = self.current_cnot_proxy
+        self.current_t_count = self.count_T_nodes()
+        self.previous_t_count = self.current_t_count
+
         return self.get_observation()
     
 
@@ -168,7 +207,9 @@ class ZXCalculus():
         if self.step_counter >= self.max_steps: 
             # Return observation and reward, end_episode
             data,mask = self.reset()
-            info = {"terminated": False, "TimeLimit.truncated": True, "T_reduced": self.initial_t - self.count_T_nodes(), "CNOT_reduced": self.initial_cnot - self.count_high_degree_nodes(degree_threshold=2)}
+            t_reduced = self.initial_t - self.current_t_count
+            cnot_reduced = self.initial_cnot - self.current_cnot_proxy
+            info = {"terminated": False, "TimeLimit.truncated": True, "T_reduced": t_reduced, "CNOT_reduced": cnot_reduced}
             # print("info", info)
             return data,mask, 0, 1, info
         
@@ -182,6 +223,8 @@ class ZXCalculus():
             # self.current_left_nodes_by_continuous, self.current_left_nodes_by_continuous_and_broken = self.num_nodes_left
             self.current_left_nodes_by_continuous = self.num_nodes_left
             self.current_high_degree_nodes = self.count_high_degree_nodes(degree_threshold=3)
+            self.current_t_count = self.count_T_nodes()
+            self.current_cnot_proxy = self.count_high_degree_nodes(degree_threshold=2) - self.count_high_degree_nodes(degree_threshold=3)
 
             done = 1 if self.is_terminal() else 0
 
@@ -189,18 +232,17 @@ class ZXCalculus():
             # reward = self.delta_left_continuous() + self.delta_left_cont_and_broken() + self.delta_high_degree_nodes()
             reward = self.delta_left_continuous() + self.delta_high_degree_nodes()
             reward += self.T_reward * self.delta_t_nodes() # reward for T reduction compared to initial T count
+            reward += self.CNOT_reward * self.delta_cnot_proxy()
             # reward = -self.current_left_nodes_by_continuous - 0.2*self.current_left_nodes_by_continuous_and_broken - self.current_high_degree_nodes
-            # new_score = self.compute_dense_reward()
-            # reward = new_score - self.last_score
-            # self.last_score = new_score  # Update the last_score for the next step
             reward = reward - self.step_penalty # Apply penalties
-            # cnot_reduce = self.initial_cnot - self.count_high_degree_nodes(degree_threshold=2)
-            # reward = reward + self.CNOT_reward*(cnot_reduce if cnot_reduce > 0 else 0) # reward for CNOT reduction
-            
+
+            t_reduced = self.initial_t - self.current_t_count
+            cnot_reduced = self.initial_cnot - self.current_cnot_proxy
             if done:
-                reward+=10
-                # reward-=0.05*len([d for d in self.nodes_degrees if d > 2]) # degree penalty + CNOT count penalty
-            info = {"terminated": done, "TimeLimit.truncated": False, "T_reduced": self.initial_t - self.count_T_nodes(), "CNOT_reduced": self.initial_cnot - self.count_high_degree_nodes(degree_threshold=2)}
+                reward+=3.0  # bonus for finishing
+                reward += t_reduced if t_reduced>0 else 0  # bonus for T reduction
+                reward += cnot_reduced if cnot_reduced>0 else 0  # bonus for CNOT reduction
+            info = {"terminated": done, "TimeLimit.truncated": False, "T_reduced": t_reduced, "CNOT_reduced": cnot_reduced}
             # print("info", info)
             return data, mask, reward, done, info
 
@@ -234,10 +276,15 @@ class ZXCalculus():
         return delta
     
     def delta_t_nodes(self):
-        current_t = self.count_T_nodes()
-        delta = self.initial_t - current_t
+        delta = self.previous_t_count - self.current_t_count
+        self.previous_t_count = self.current_t_count
         return delta
     
+    def delta_cnot_proxy(self):
+        delta = self.previous_cnot_proxy - self.current_cnot_proxy
+        self.previous_cnot_proxy = self.current_cnot_proxy
+        return delta
+
     @property
     def n_spiders(self)->int:
         """Number of nodes in diagram"""
@@ -495,12 +542,56 @@ class ZXCalculus():
         v1t = self.graph.type(v1)
         v0p = self.graph.phase(v0)
         v1p = self.graph.phase(v1)
-        if (v0p == 0 and v1p == 0 and
-        ((v0t == VertexType.Z and v1t == VertexType.X) or (v0t == VertexType.X and v1t == VertexType.Z))):
+        if ((v0t == VertexType.Z and v1t == VertexType.X) or (v0t == VertexType.X and v1t == VertexType.Z)):
             v0n = [n for n in self._nbrs[v0] if not n == v1]
             v1n = [n for n in self._nbrs[v1] if not n == v0]
 
-            if (len(v0n) == 2 and len(v1n) == 2 and
+            if v0p != 0 or len(v0n) !=2:
+                if len(v0n) == 0:
+                    child1 = self.graph.add_vertex(ty=v0t, phase=v0p)
+                    child2 = self.graph.add_vertex(ty=v0t, phase=0)
+                    self.graph.set_phase(v0, 0)
+                    self.graph.add_edge((v0, child1))
+                    self.graph.add_edge((v0, child2))
+                    v0n = [child1, child2]
+                elif len(v0n) ==1:
+                    child = self.graph.add_vertex(ty=v0t, phase=v0p)
+                    self.graph.set_phase(v0, 0)
+                    self.graph.add_edge((v0, child))
+                    v0n.append(child)  
+                else:
+                    child = self.graph.add_vertex(ty=v0t, phase=v0p)
+                    self.graph.set_phase(v0, 0)
+                    self.graph.add_edge((v0, child))
+                    for n in v0n[1:]:
+                        self.graph.remove_edge((v0,n))
+                        self.graph.add_edge((child,n))
+                    v0n = v0n[:1] + [child]
+            elif v1p != 0 or len(v1n) !=2:
+                if len(v1n) == 0:
+                    child1 = self.graph.add_vertex(ty=v1t, phase=v1p)
+                    child2 = self.graph.add_vertex(ty=v1t, phase=0)
+                    self.graph.set_phase(v1, 0)
+                    self.graph.add_edge((v1, child1))
+                    self.graph.add_edge((v1, child2))
+                    v1n = [child1, child2]
+                elif len(v1n) ==1:
+                    child = self.graph.add_vertex(ty=v1t, phase=v1p)
+                    self.graph.set_phase(v1, 0)
+                    self.graph.add_edge((v1, child))
+                    v1n.append(child)  
+                else:
+                    child = self.graph.add_vertex(ty=v1t, phase=v1p)
+                    self.graph.set_phase(v1, 0)
+                    self.graph.add_edge((v1, child))
+                    for n in v1n[1:]:
+                        self.graph.remove_edge((v1,n))
+                        self.graph.add_edge((child,n))
+                    v1n = v1n[:1] + [child]
+
+            
+            elif (len(v0n) == 2 and len(v1n) == 2 and
+                v0p == 0 and v1p == 0 and
                 self.graph.num_edges(v0, v1) == 1 and # there is exactly one edge between v0 and v1
                 self.graph.num_edges(v0, v0) == 0 and # there are no self-loops on v0
                 self.graph.num_edges(v1, v1) == 0): # there are no self-loops on v1
@@ -519,6 +610,7 @@ class ZXCalculus():
                 self.graph.add_edge((v0,b))
                 self.graph.add_edge((v1,a))
                 return True
+            
             else:
                 return False
         else:
@@ -557,11 +649,7 @@ class ZXCalculus():
 
                 # bialgebra
                 m2 = min(deg_diff_color, 5)
-                if deg == 3 and self.graph.phase(v) == 0:
-                    for j in range(m2):
-                        n = self._nbrs_diff_color[v][j]
-                        if len(self._nbrs[n]) == 3 and self.graph.phase(n) == 0:
-                            mask[base + BIAG_OFFSET + j] = 1  # non-contiguous for bialgebra patterns
+                mask[base + BIAG_OFFSET : base + BIAG_OFFSET + m2] = 1  # contiguous block
  
             elif self.graph.type(v) == VertexType.H_BOX:
                 mask[base + SPLIT_OFFSET] = 1

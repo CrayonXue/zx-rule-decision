@@ -2,6 +2,7 @@
 runs/
 run_out/
 data/
+data_test/
 
 *.err
 *.out

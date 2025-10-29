@@ -29,32 +29,37 @@ export PYTORCH_NUM_THREADS=1
 
 # ===============================================================
 GENERATE=False
+GENERATE_TEST=False
 TRAIN=True # Set to True if you want to train the model, otherwise it will skip training.
-EVAL=False  # Set to True if you want to evaluate the model after training.
+EVAL=False # Set to True if you want to evaluate the model after training.
 
 # ===============================================================
 # ----------------------------------------------------------
 
-num_qubits_min=5
-num_qubits_max=10
+num_qubits_min=3
+num_qubits_max=5
 min_gates=10 
-max_gates=20 
-p_t=0.4 
+max_gates=30 
+p_tofolli=0.2
+p_cp=0.5
+p_t=0.2 
 p_h=0.1
-p_s=0.1
-p_cnot=0.3
-p_not=0.1
+p_s=0.0
+p_cnot=0.0
+p_not=0.0
 
 max_epochs=100000
 ppo_updates_per_epoch=1
-max_train_steps=50000
-emb_dim=1024
+max_train_steps=10000
+emb_dim=512
 hid_dim=512
+layers=5
 num_envs=8
 rollout_steps=512
+ent_coef=0.01
 minibatch_size=256
-env_max_steps=100
-step_penalty=0.01
+env_max_steps=300
+step_penalty=0.02
 length_penalty=0.001
 logger_type='swanlab'
 precision='32-true'
@@ -67,6 +72,8 @@ if [ "$GENERATE" = "True" ]; then
     --num_qubits_max $num_qubits_max \
     --min_gates $min_gates \
     --max_gates $max_gates \
+    --p_tofolli $p_tofolli \
+    --p_cp $p_cp \
     --p_t $p_t \
     --p_h $p_h \
     --p_s $p_s \
@@ -84,8 +91,10 @@ if [ "$TRAIN" = "True" ]; then
     --max_train_steps $max_train_steps \
     --emb_dim $emb_dim \
     --hid_dim $hid_dim \
+    --layers $layers \
     --num_envs $num_envs \
     --rollout_steps $rollout_steps \
+    --ent_coef $ent_coef \
     --minibatch_size $minibatch_size \
     --logger_type $logger_type \
     --precision $precision \
@@ -98,6 +107,8 @@ if [ "$TRAIN" = "True" ]; then
     --num_qubits_max $num_qubits_max \
     --min_gates $min_gates \
     --max_gates $max_gates \
+    --p_tofolli $p_tofolli \
+    --p_cp $p_cp \
     --p_t $p_t \
     --p_s $p_s \
     --p_cnot $p_cnot \
@@ -106,24 +117,47 @@ if [ "$TRAIN" = "True" ]; then
 fi
 
 
-ckpt="runs/ZX-PPO-GNN_nq[2-3]_gates[3-6]_envs8_T256_mb128_ppo4_lr0.0003_20250927-180908/checkpoints/last.ckpt"
-ckpt="runs/ZX-PPO-GNN_nq[5-10]_gates[10-30]_envs8_T512_mb128_ppo4_lr0.0003_20250927-194912/checkpoints/last.ckpt"
-ckpt="runs/ZX-PPO-GNN_nq[2-6]_gates[5-10]_envs8_T512_mb128_ppo4_lr0.0003_20250929-120817/checkpoints/last.ckpt"
-ckpt="runs/ZX-PPO-GNN_nq[2-3]_gates[3-6]_envs8_T512_mb128_ppo4_lr0.0003_20250930-214313/checkpoints/last.ckpt"
-if [ "$EVAL" = "True" ]; then
-    python eval.py \
-    --ckpt_path $ckpt \
+
+if [ "$GENERATE_TEST" = "True" ]; then
+    python zxreinforce/generate.py \
+    --out_path ./data_test \
+    --keep_limit 2000 \
     --num_qubits_min $num_qubits_min \
     --num_qubits_max $num_qubits_max \
     --min_gates $min_gates \
     --max_gates $max_gates \
-    --data_dir ./data \
-    --data_length $data_length \
+    --p_tofolli $p_tofolli \
+    --p_cp $p_cp \
     --p_t $p_t \
     --p_h $p_h \
-    --env_max_steps $env_max_steps \
-    --step_penalty $step_penalty \
-    --length_penalty $length_penalty \
+    --p_s $p_s \
+    --p_cnot $p_cnot \
+    --p_not $p_not \
+    --max_reward 0.95 \
+    --seed 777
+fi
+
+
+ckpt="runs/ZX-PPO-GNN_nq[5-10]_gates[10-30]_envs8_T512_mb256_ppo4_lr0.0003_20251016-191214/checkpoints/last.ckpt"
+if [ "$EVAL" = "True" ]; then
+    python eval.py \
+    --ckpt_path $ckpt \
+    --data_dir ./data_test \
+    --data_length 2000 \
+    --num_qubits_min $num_qubits_min \
+    --num_qubits_max $num_qubits_max \
+    --min_gates $min_gates \
+    --max_gates $max_gates \
+    --p_t 0.4 --p_h 0.1 --p_s 0.1 --p_cnot 0.3 --p_not 0.1 \
+    --env_max_steps 100 \
+    --step_penalty 0.01 \
+    --length_penalty 0.001 \
     --adapted_reward \
-    --count_down_from 20
+    --count_down_from 20 \
+    --num_envs_eval 8 \
+    --eval_episodes 400 \
+    --greedy \
+    --seed 123 \
+    --out_json eval_summary.json
+
 fi

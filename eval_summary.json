@@ -1,0 +1,17 @@
+{
+  "episodes": 400,
+  "success_rate": 0.9,
+  "timeout_rate": 0.1,
+  "return_mean": 13.214398384094238,
+  "return_std": 4.953736782073975,
+  "length_mean": 14.65999984741211,
+  "length_std": 28.484106063842773,
+  "T_reduced_mean": 2.359999895095825,
+  "T_reduced_std": 2.142521858215332,
+  "CNOT_reduced_mean": -7.440000057220459,
+  "CNOT_reduced_std": 2.5389761924743652,
+  "greedy": true,
+  "temperature": 1.0,
+  "node_feat_dim_ckpt": 19,
+  "rec_dim_ckpt": 256
+}

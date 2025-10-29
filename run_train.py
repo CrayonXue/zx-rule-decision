@@ -41,7 +41,7 @@ class StepsDataset(torch.utils.data.Dataset):
 def build_env_fn(args):
     """Factory returning a fresh environment instance each time it's called."""
     def make_env():
-        exp_name = f"GraphBank_nq[{args.num_qubits_min}-{args.num_qubits_max}]_gates[{args.min_gates}-{args.max_gates}]_T{args.p_t}_H{args.p_h}_S{args.p_s}_CX{args.p_cnot}_X{args.p_not}_length{args.data_length}"
+        exp_name = f"GraphBank_nq[{args.num_qubits_min}-{args.num_qubits_max}]_gates[{args.min_gates}-{args.max_gates}]_T{args.p_t}_H{args.p_h}_S{args.p_s}_CX{args.p_cnot}_X{args.p_not}_TOF{args.p_tofolli}_CP{args.p_cp}_length{args.data_length}"
         bank_path = os.path.join(args.data_dir, exp_name)
         resetter = Resetter_GraphBank(
             bank_path=bank_path,
@@ -103,8 +103,11 @@ def train(args):
         node_feat_dim=args.node_feat_dim,
         emb_dim=args.emb_dim,
         hid_dim=args.hid_dim,
+        layers=args.layers,
+        rec_dim=args.rec_dim,
+        tbptt_steps=args.tbptt_steps,
         rollout_steps=args.rollout_steps,
-        batch_size=args.minibatch_size,
+        batch_size=args.minibatch_size,   # kept but not used in TBPTT
         epochs=args.ppo_epochs,
         gamma=args.gamma,
         gae_lambda=args.gae_lambda,
@@ -215,9 +218,10 @@ if __name__ == "__main__":
     parser.add_argument("--vf_coef", type=float, default=0.5)
 
     # GNN model dims
-    parser.add_argument("--node_feat_dim", type=int, default=5 + 10 + 1)  # matches env x: 5+10+1+1
+    parser.add_argument("--node_feat_dim", type=int, default=5 + 10 + 4)  # matches env x: 5+10+4
     parser.add_argument("--emb_dim", type=int, default=256)
     parser.add_argument("--hid_dim", type=int, default=128)
+    parser.add_argument("--layers", type=int, default=3)
 
     # Environment (ZXCalculus)
     parser.add_argument("--env_max_steps", type=int, default=100)
@@ -233,6 +237,8 @@ if __name__ == "__main__":
     parser.add_argument("--num_qubits_max", type=int, default=6)
     parser.add_argument("--min_gates", type=int, default=5)
     parser.add_argument("--max_gates", type=int, default=30)
+    parser.add_argument("--p_tofolli", type=float, default=0.2)
+    parser.add_argument("--p_cp", type=float, default=0.0)
     parser.add_argument("--p_t", type=float, default=0.2)
     parser.add_argument("--p_h", type=float, default=0.2)
     parser.add_argument("--p_s", type=float, default=0.2)
@@ -240,5 +246,7 @@ if __name__ == "__main__":
     parser.add_argument("--p_not", type=float, default=0.2)
     parser.add_argument("--resetter_seed", type=int, default=-1, help="-1 = random each reset")
 
+    parser.add_argument("--rec_dim", type=int, default=256)  # GRU hidden size
+    parser.add_argument("--tbptt_steps", type=int, default=60)  # truncated BPTT steps
     args = parser.parse_args()
     train(args)
